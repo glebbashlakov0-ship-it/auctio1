@@ -516,6 +516,11 @@
       learnMore: "Află mai multe",
     },
   };
+  const AUTH_USERS_KEY = "auctio_users";
+  const AUTH_SESSION_KEY = "auctio_session";
+  const LEGACY_AUTH_USERS_KEY = "auctio-auth-users";
+  const LEGACY_AUTH_SESSION_KEY = "auctio-auth-session";
+  const AUTH_EVENT = "auctio:auth-changed";
   let currentLanguageCode = null;
   let translationDataPromise = null;
   let translationObserver = null;
@@ -680,11 +685,8 @@
             </div>
           </div>
         </div>
-        <div class="hidden xl:flex items-center gap-2">
-          <button data-i18n="login" class="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground transition-all h-10" type="button">Login</button>
-          <button data-i18n="register" class="inline-flex items-center justify-center whitespace-nowrap rounded-md bg-black px-4 py-2 text-sm font-medium text-white shadow-xs transition-all h-10 hover:opacity-90" type="button">Register</button>
-        </div>
-        <button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 size-9 xl:hidden" type="button" aria-label="Menu">
+        <div class="hidden xl:flex items-center gap-2" data-auth-controls></div>
+        <button data-slot="button" data-header-mobile-trigger class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50 size-9 xl:hidden" type="button" aria-label="Menu">
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-menu h-5 w-5"><line x1="4" x2="20" y1="12" y2="12"></line><line x1="4" x2="20" y1="6" y2="6"></line><line x1="4" x2="20" y1="18" y2="18"></line></svg>
         </button>
       </div>
@@ -749,6 +751,305 @@
     const expires = new Date();
     expires.setTime(expires.getTime() + 365 * 24 * 60 * 60 * 1000);
     document.cookie = `${name}=${encodeURIComponent(value)}; expires=${expires.toUTCString()}; path=/; SameSite=Lax`;
+  }
+
+  function escapeHtml(value) {
+    return String(value == null ? "" : value)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function readAuthStorage(key, fallbackValue) {
+    try {
+      const rawValue = window.localStorage.getItem(key);
+      return rawValue ? JSON.parse(rawValue) : fallbackValue;
+    } catch (_error) {
+      return fallbackValue;
+    }
+  }
+
+  function writeAuthStorage(key, value) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    } catch (_error) {}
+  }
+
+  function getStoredUsers() {
+    const users = readAuthStorage(AUTH_USERS_KEY, readAuthStorage(LEGACY_AUTH_USERS_KEY, []));
+    return Array.isArray(users) ? users : [];
+  }
+
+  function getStoredSession() {
+    const session = readAuthStorage(AUTH_SESSION_KEY, readAuthStorage(LEGACY_AUTH_SESSION_KEY, null));
+    return session && typeof session === "object" ? session : null;
+  }
+
+  function sanitizeUser(user) {
+    if (!user) return null;
+    return {
+      id: user.id,
+      firstName: user.firstName || "",
+      lastName: user.lastName || "",
+      fullName: `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "Collector",
+      email: user.email || "",
+      phone: user.phone || "",
+      createdAt: user.createdAt || "",
+    };
+  }
+
+  function getCurrentUser() {
+    if (window.__AUCTIO_AUTH_USER) {
+      return sanitizeUser(window.__AUCTIO_AUTH_USER);
+    }
+    const session = getStoredSession();
+    if (!session || !session.userId) return null;
+    const users = getStoredUsers();
+    return sanitizeUser(users.find((user) => user.id === session.userId) || null);
+  }
+
+  function dispatchAuthChange() {
+    window.dispatchEvent(new CustomEvent(AUTH_EVENT, { detail: { user: getCurrentUser() } }));
+    window.dispatchEvent(new CustomEvent("auctio:auth", { detail: { user: getCurrentUser() } }));
+  }
+
+  function registerAuthUser(payload) {
+    const users = getStoredUsers();
+    const email = String(payload.email || "").trim().toLowerCase();
+    if (!email) throw new Error("Email is required.");
+    if (users.some((user) => user.email === email)) throw new Error("An account with this email already exists.");
+    if (String(payload.password || "").length < 8) throw new Error("Password must be at least 8 characters.");
+
+    const user = {
+      id: `user_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`,
+      firstName: String(payload.firstName || "").trim(),
+      lastName: String(payload.lastName || "").trim(),
+      email,
+      phone: String(payload.phone || "").trim(),
+      password: String(payload.password || ""),
+      createdAt: new Date().toISOString(),
+    };
+
+    users.push(user);
+    writeAuthStorage(AUTH_USERS_KEY, users);
+    writeAuthStorage(AUTH_SESSION_KEY, { userId: user.id, createdAt: new Date().toISOString() });
+    dispatchAuthChange();
+    return sanitizeUser(user);
+  }
+
+  function loginAuthUser(email, password) {
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    const user = getStoredUsers().find((entry) => entry.email === normalizedEmail);
+    if (!user || user.password !== String(password || "")) throw new Error("Incorrect email or password.");
+
+    writeAuthStorage(AUTH_SESSION_KEY, { userId: user.id, createdAt: new Date().toISOString() });
+    dispatchAuthChange();
+    return sanitizeUser(user);
+  }
+
+  function logoutAuthUser() {
+    try {
+      window.localStorage.removeItem(AUTH_SESSION_KEY);
+      window.localStorage.removeItem(LEGACY_AUTH_SESSION_KEY);
+    } catch (_error) {}
+    dispatchAuthChange();
+  }
+
+  function getUserInitials(user) {
+    const parts = [user && user.firstName, user && user.lastName].filter(Boolean);
+    if (parts.length) {
+      return parts
+        .map((part) => String(part).trim().charAt(0).toUpperCase())
+        .join("")
+        .slice(0, 2);
+    }
+    return String((user && user.email) || "A").charAt(0).toUpperCase();
+  }
+
+  function buildAuthPageUrl(pageName, basePath) {
+    const redirectTo = `${window.location.pathname}${window.location.search || ""}${window.location.hash || ""}`;
+    return `${basePath}${pageName}.html?redirect=${encodeURIComponent(redirectTo)}`;
+  }
+
+  function getPostAuthRedirect(basePath) {
+    const redirect = new URLSearchParams(window.location.search).get("redirect");
+    if (!redirect) return `${basePath}account.html`;
+    if (redirect.startsWith("http://") || redirect.startsWith("https://")) return `${basePath}account.html`;
+    if (
+      /(^|\/)(login|register|account)\.html(?:$|[?#])/.test(redirect) ||
+      redirect === "login" ||
+      redirect === "register" ||
+      redirect === "account"
+    ) {
+      return `${basePath}account.html`;
+    }
+    return redirect;
+  }
+
+  function renderAuthControls(basePath) {
+    const container = document.querySelector("[data-auth-controls]");
+    if (!container) return;
+
+    const user = getCurrentUser();
+    if (!user) {
+      container.innerHTML = `
+        <a data-i18n="login" class="inline-flex items-center justify-center whitespace-nowrap rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-xs hover:bg-accent hover:text-accent-foreground transition-all h-10" href="${buildAuthPageUrl("login", basePath)}">Login</a>
+        <a data-i18n="register" class="inline-flex items-center justify-center whitespace-nowrap rounded-md bg-black px-4 py-2 text-sm font-medium text-white shadow-xs transition-all h-10 hover:opacity-90" href="${buildAuthPageUrl("register", basePath)}">Register</a>
+      `;
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="relative" data-auth-menu-root>
+        <button type="button" data-auth-menu-trigger aria-expanded="false" class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] hover:bg-accent hover:text-accent-foreground h-9 py-2 gap-2 px-3">
+          <div class="h-8 w-8 rounded-full bg-gradient-to-br from-amber-500 to-amber-700 flex items-center justify-center text-white font-medium text-sm">${escapeHtml(getUserInitials(user).charAt(0))}</div>
+          <div class="text-left hidden lg:block">
+            <div class="text-sm font-medium leading-none truncate max-w-[140px]">${escapeHtml(user.fullName)}</div>
+            <div class="text-xs text-muted-foreground mt-1 truncate max-w-[140px]">${escapeHtml(user.email)}</div>
+          </div>
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="m6 9 6 6 6-6"></path></svg>
+        </button>
+        <div data-auth-menu class="hidden absolute right-0 top-full z-[150] mt-3 w-56 overflow-x-hidden overflow-y-auto rounded-md border border-border bg-background p-1 shadow-md">
+          <a href="${basePath}account.html?tab=overview" class="relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+            Overview
+          </a>
+          <a href="${basePath}account.html?tab=bids" class="relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"></path><path d="m16 16 6-6"></path><path d="m8 8 6-6"></path><path d="m9 7 8 8"></path><path d="m21 11-8-8"></path></svg>
+            Active Bids
+          </a>
+          <a href="${basePath}account.html?tab=watchlist" class="relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg>
+            Watchlist
+          </a>
+          <a href="${basePath}account.html?tab=history" class="relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+            Viewing History
+          </a>
+          <a href="${basePath}account.html?tab=settings" class="relative flex cursor-pointer items-center gap-2 rounded-sm px-2 py-1.5 text-sm transition-colors hover:bg-accent hover:text-accent-foreground">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+            Settings
+          </a>
+          <button type="button" data-auth-logout class="relative flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-sm text-left text-red-600 transition-colors hover:bg-accent hover:text-red-600">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" x2="9" y1="12" y2="12"></line></svg>
+            Log Out
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function buildMobileAuthSection(basePath) {
+    const user = getCurrentUser();
+    if (!user) {
+      return `
+        <div class="flex gap-2 mb-6">
+          <a class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all border shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 flex-1 bg-transparent" href="${buildAuthPageUrl("login", basePath)}">Login</a>
+          <a class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 flex-1" href="${buildAuthPageUrl("register", basePath)}">Register</a>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="mb-6 rounded-xl border border-border/60 bg-muted/30 p-4">
+        <div class="flex items-center gap-3">
+          <span class="flex h-11 w-11 items-center justify-center rounded-full bg-black text-sm font-semibold text-white">${escapeHtml(getUserInitials(user))}</span>
+          <div class="min-w-0">
+            <p class="truncate text-sm font-medium">${escapeHtml(user.fullName)}</p>
+            <p class="truncate text-xs text-muted-foreground">${escapeHtml(user.email)}</p>
+          </div>
+        </div>
+        <div class="mt-4 flex gap-2">
+          <a class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all border shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 flex-1 bg-transparent" href="${basePath}account.html">Account</a>
+          <button type="button" data-mobile-logout class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 flex-1">Log out</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function buildMobileCategories(basePath) {
+    return `
+      <div data-mobile-categories-view class="hidden flex-col h-full min-h-0">
+        <div class="p-6 border-b border-border flex-shrink-0">
+          <button type="button" data-mobile-categories-back class="flex items-center gap-2 text-sm font-medium hover:underline underline-offset-4">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 rotate-180"><path d="m9 18 6-6-6-6"></path></svg>
+            Back
+          </button>
+        </div>
+        <nav class="flex flex-col p-6 flex-1 overflow-y-auto min-h-0">
+          ${MEGA_MENU.map(
+            (group) => `
+              <div>
+                <button type="button" data-mobile-category-group class="flex items-center gap-4 py-5 group w-full text-left">
+                  <div class="flex-1 min-w-0">
+                    <div class="font-semibold text-base line-clamp-1">${group.title}</div>
+                  </div>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 flex-shrink-0 transition-transform"><path d="m6 9 6 6 6-6"></path></svg>
+                </button>
+                <div data-mobile-category-panel class="hidden pb-4">
+                  <a class="block pb-3 text-sm font-semibold hover:underline underline-offset-4" href="${basePath}${group.href}">View all ${group.title}</a>
+                  <div class="space-y-3">
+                    ${group.items
+                      .map(
+                        (item) => `<a class="block text-sm text-muted-foreground hover:text-foreground transition-colors" href="${basePath}${item.href}">${item.label}</a>`
+                      )
+                      .join("")}
+                  </div>
+                </div>
+                <div class="h-px w-full bg-border"></div>
+              </div>
+            `
+          ).join("")}
+        </nav>
+      </div>
+    `;
+  }
+
+  function buildMobileMenu(basePath) {
+    return `
+      <div data-header-mobile-overlay class="hidden fixed inset-0 z-[205] bg-black/50 backdrop-blur-[1px]"></div>
+      <div role="dialog" aria-modal="true" data-header-mobile-menu class="hidden fixed inset-y-0 right-0 z-[210] h-full w-full border-l bg-background shadow-lg sm:max-w-sm sm:w-3/4">
+        <div class="flex h-full flex-col">
+          <div class="flex flex-col gap-1.5 border-b border-border p-6">
+            <img alt="Auction House" width="120" height="30" class="h-8 w-auto" src="${basePath}logo1.svg" />
+          </div>
+          <nav data-mobile-main-nav class="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
+            ${buildMobileAuthSection(basePath)}
+            <div class="mb-4 h-px w-full bg-border"></div>
+            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}auctions.html">Shop All</a>
+            <div class="h-px w-full bg-border"></div>
+            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}collections/last-chance.html">Last Chance</a>
+            <div class="h-px w-full bg-border"></div>
+            <button type="button" data-mobile-categories-trigger class="flex items-center justify-between py-4 text-left text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all">
+              <span>Categories</span>
+              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 transition-transform"><path d="m9 18 6-6-6-6"></path></svg>
+            </button>
+            <div class="h-px w-full bg-border"></div>
+            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}collections.html">Collections</a>
+            <div class="h-px w-full bg-border"></div>
+            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}about.html">About</a>
+            <div class="h-px w-full bg-border"></div>
+            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}contact.html">Contact</a>
+          </nav>
+          ${buildMobileCategories(basePath)}
+          <button type="button" data-mobile-menu-close class="absolute right-4 top-4 rounded-xs opacity-70 transition-opacity hover:opacity-100">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="size-4"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg>
+            <span class="sr-only">Close</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function ensureMobileMenu(basePath) {
+    const existing = document.querySelector("[data-header-mobile-menu]");
+    if (existing) {
+      existing.remove();
+    }
+    document.querySelector("[data-header-mobile-overlay]")?.remove();
+    document.body.insertAdjacentHTML("beforeend", buildMobileMenu(basePath));
   }
 
   function getLanguageByCode(code) {
@@ -1431,16 +1732,22 @@
   function bindHeaderInteractions(basePath) {
     const languageTrigger = document.querySelector("[data-header-language-trigger]");
     const searchTrigger = document.querySelector("[data-header-search-trigger]");
+    const mobileTrigger = document.querySelector("[data-header-mobile-trigger]");
     const languageMenu = document.getElementById("header-language-menu");
     const languageScroll = document.querySelector("[data-language-scroll]");
     const searchDialog = document.getElementById("header-search-dialog");
     const searchInput = document.querySelector("[data-search-input]");
     const searchScroll = document.querySelector("[data-search-scroll]");
-
-    if (document.body.dataset.headerBindingsReady === "true") {
-      return;
-    }
-    document.body.dataset.headerBindingsReady = "true";
+    const mobileOverlay = document.querySelector("[data-header-mobile-overlay]");
+    const mobileMenu = document.querySelector("[data-header-mobile-menu]");
+    const mobileMainNav = document.querySelector("[data-mobile-main-nav]");
+    const mobileClose = document.querySelector("[data-mobile-menu-close]");
+    const mobileCategoriesTrigger = document.querySelector("[data-mobile-categories-trigger]");
+    const mobileCategoriesView = document.querySelector("[data-mobile-categories-view]");
+    const mobileCategoriesBack = document.querySelector("[data-mobile-categories-back]");
+    const authRoot = document.querySelector("[data-auth-menu-root]");
+    const authTrigger = authRoot ? authRoot.querySelector("[data-auth-menu-trigger]") : null;
+    const authMenu = authRoot ? authRoot.querySelector("[data-auth-menu]") : null;
 
     const closeLanguageMenu = function () {
       if (!languageMenu || !languageTrigger) return;
@@ -1454,6 +1761,41 @@
       languageMenu.classList.remove("hidden");
       languageTrigger.setAttribute("aria-expanded", "true");
       languageTrigger.setAttribute("data-state", "open");
+    };
+
+    const closeMobileMenu = function () {
+      if (!mobileMenu || !mobileOverlay) return;
+      mobileMenu.classList.add("hidden");
+      mobileOverlay.classList.add("hidden");
+      document.body.style.removeProperty("overflow");
+    };
+
+    const openMobileMenu = function () {
+      if (!mobileMenu || !mobileOverlay) return;
+      closeLanguageMenu();
+      closeSearch();
+      closeAuthMenu();
+      if (mobileMainNav && mobileCategoriesView) {
+        mobileMainNav.classList.remove("hidden");
+        mobileCategoriesView.classList.add("hidden");
+        mobileCategoriesView.classList.remove("flex");
+      }
+      mobileMenu.classList.remove("hidden");
+      mobileOverlay.classList.remove("hidden");
+      document.body.style.overflow = "hidden";
+    };
+
+    const closeAuthMenu = function () {
+      if (!authMenu || !authTrigger) return;
+      authMenu.classList.add("hidden");
+      authTrigger.setAttribute("aria-expanded", "false");
+    };
+
+    const toggleAuthMenu = function () {
+      if (!authMenu || !authTrigger) return;
+      const shouldOpen = authMenu.classList.contains("hidden");
+      authMenu.classList.toggle("hidden", !shouldOpen);
+      authTrigger.setAttribute("aria-expanded", shouldOpen ? "true" : "false");
     };
 
     const closeSearch = function () {
@@ -1480,7 +1822,8 @@
       }
     };
 
-    if (languageTrigger && languageMenu) {
+    if (languageTrigger && languageMenu && !languageTrigger.dataset.bound) {
+      languageTrigger.dataset.bound = "true";
       languageTrigger.addEventListener("click", function (event) {
         event.preventDefault();
         event.stopPropagation();
@@ -1515,7 +1858,8 @@
       });
     }
 
-    if (searchTrigger && searchDialog && searchInput) {
+    if (searchTrigger && searchDialog && searchInput && !searchTrigger.dataset.bound) {
+      searchTrigger.dataset.bound = "true";
       searchTrigger.addEventListener("click", async function (event) {
         event.preventDefault();
         event.stopPropagation();
@@ -1564,28 +1908,125 @@
       }
     }
 
-    document.addEventListener("keydown", function (event) {
-      if (event.key === "Escape") {
-        closeLanguageMenu();
-        closeSearch();
-      }
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && searchTrigger) {
+    if (mobileTrigger && !mobileTrigger.dataset.bound) {
+      mobileTrigger.dataset.bound = "true";
+      mobileTrigger.addEventListener("click", function (event) {
         event.preventDefault();
-        openSearch();
-      }
+        openMobileMenu();
+      });
+    }
+
+    if (mobileClose && !mobileClose.dataset.bound) {
+      mobileClose.dataset.bound = "true";
+      mobileClose.addEventListener("click", function (event) {
+        event.preventDefault();
+        closeMobileMenu();
+      });
+    }
+
+    if (mobileOverlay && !mobileOverlay.dataset.bound) {
+      mobileOverlay.dataset.bound = "true";
+      mobileOverlay.addEventListener("click", closeMobileMenu);
+    }
+
+    if (mobileCategoriesTrigger && mobileMainNav && mobileCategoriesView && !mobileCategoriesTrigger.dataset.bound) {
+      mobileCategoriesTrigger.dataset.bound = "true";
+      mobileCategoriesTrigger.addEventListener("click", function () {
+        mobileMainNav.classList.add("hidden");
+        mobileCategoriesView.classList.remove("hidden");
+        mobileCategoriesView.classList.add("flex");
+      });
+    }
+
+    if (mobileCategoriesBack && mobileMainNav && mobileCategoriesView && !mobileCategoriesBack.dataset.bound) {
+      mobileCategoriesBack.dataset.bound = "true";
+      mobileCategoriesBack.addEventListener("click", function () {
+        mobileCategoriesView.classList.add("hidden");
+        mobileCategoriesView.classList.remove("flex");
+        mobileMainNav.classList.remove("hidden");
+      });
+    }
+
+    mobileMenu?.querySelectorAll("[data-mobile-category-group]").forEach((button) => {
+      if (button.dataset.bound) return;
+      button.dataset.bound = "true";
+      button.addEventListener("click", function () {
+        const panel = button.parentElement?.querySelector("[data-mobile-category-panel]");
+        const icon = button.querySelector("svg");
+        const isHidden = panel?.classList.contains("hidden");
+        panel?.classList.toggle("hidden", !isHidden);
+        icon?.classList.toggle("rotate-180", Boolean(isHidden));
+      });
     });
 
-    document.addEventListener("click", function (event) {
-      if (
-        languageMenu &&
-        languageTrigger &&
-        !languageMenu.classList.contains("hidden") &&
-        !languageMenu.contains(event.target) &&
-        !languageTrigger.contains(event.target)
-      ) {
-        closeLanguageMenu();
-      }
+    mobileMenu?.querySelectorAll("a").forEach((link) => {
+      if (link.dataset.bound) return;
+      link.dataset.bound = "true";
+      link.addEventListener("click", closeMobileMenu);
     });
+
+    const mobileLogout = mobileMenu?.querySelector("[data-mobile-logout]");
+    if (mobileLogout && !mobileLogout.dataset.bound) {
+      mobileLogout.dataset.bound = "true";
+      mobileLogout.addEventListener("click", function (event) {
+        event.preventDefault();
+        Promise.resolve(window.AuctioAuth.logout()).then(function () {
+          closeMobileMenu();
+          window.location.href = basePath + "index.html";
+        });
+      });
+    }
+
+    if (document.body.dataset.headerGlobalBindingsReady !== "true") {
+      document.body.dataset.headerGlobalBindingsReady = "true";
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          closeLanguageMenu();
+          closeSearch();
+          closeAuthMenu();
+          closeMobileMenu();
+        }
+        if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k" && searchTrigger) {
+          event.preventDefault();
+          openSearch();
+        }
+      });
+
+      document.addEventListener("click", function (event) {
+        if (
+          languageMenu &&
+          languageTrigger &&
+          !languageMenu.classList.contains("hidden") &&
+          !languageMenu.contains(event.target) &&
+          !languageTrigger.contains(event.target)
+        ) {
+          closeLanguageMenu();
+        }
+        if (authMenu && authTrigger && !authMenu.classList.contains("hidden") && !authMenu.contains(event.target) && !authTrigger.contains(event.target)) {
+          closeAuthMenu();
+        }
+      });
+    }
+
+    if (authTrigger && authMenu && !authTrigger.dataset.bound) {
+      authTrigger.dataset.bound = "true";
+      authTrigger.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        toggleAuthMenu();
+      });
+
+      authMenu.addEventListener("click", function (event) {
+        event.stopPropagation();
+      });
+
+      authMenu.querySelector("[data-auth-logout]")?.addEventListener("click", function (event) {
+        event.preventDefault();
+        Promise.resolve(window.AuctioAuth.logout()).then(function () {
+          window.location.href = basePath + "index.html";
+        });
+      });
+    }
   }
 
   function enhanceHeader(basePath) {
@@ -1594,6 +2035,8 @@
     if (header && !header.querySelector("[data-header-search-trigger]")) {
       header.outerHTML = buildHeader(resolvedBasePath);
     }
+    renderAuthControls(resolvedBasePath);
+    ensureMobileMenu(resolvedBasePath);
     ensureLanguageMenu();
     ensureSearchDialog();
     syncLanguage(undefined, resolvedBasePath);
@@ -1605,6 +2048,29 @@
     enhanceHeader,
     syncLanguage,
   };
+  window.AuctioAuth = {
+    getCurrentUser,
+    getStoredUsers,
+    register: registerAuthUser,
+    login: loginAuthUser,
+    logout: logoutAuthUser,
+    getPostAuthRedirect,
+    buildAuthPageUrl,
+  };
+  window.addEventListener(AUTH_EVENT, function () {
+    const basePath = getBasePath();
+    renderAuthControls(basePath);
+    ensureMobileMenu(basePath);
+    syncLanguage(undefined, basePath);
+    bindHeaderInteractions(basePath);
+  });
+  window.addEventListener("auctio:auth", function () {
+    const basePath = getBasePath();
+    renderAuthControls(basePath);
+    ensureMobileMenu(basePath);
+    syncLanguage(undefined, basePath);
+    bindHeaderInteractions(basePath);
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener(

@@ -10,6 +10,16 @@
     });
   }
 
+  function loadFallbackLots() {
+    return loadJson(BASE_PATH + "data/all-shop-lots.json")
+      .then(function (items) {
+        return Array.isArray(items) ? items : [];
+      })
+      .catch(function () {
+        return [];
+      });
+  }
+
   function requestSupabase(path) {
     return fetch(SUPABASE_URL + path, {
       headers: {
@@ -185,6 +195,141 @@
     };
   }
 
+  function slugToLabel(slug) {
+    return String(slug || "")
+      .replace(/[-_]+/g, " ")
+      .replace(/\b\w/g, function (char) { return char.toUpperCase(); });
+  }
+
+  function normalizeFallbackLot(item) {
+    var title = item.title || slugToLabel(item.slug) || "Auction Lot";
+    var categoryName = item.category || "Auction";
+    var currentBid = Number(item.currentBid || item.current_bid || 0);
+    var startingBid = Number(item.startingBid || item.starting_bid || currentBid || 0);
+    var image = item.image || item.image_url || BASE_PATH + "placeholder.svg";
+    return {
+      id: item.id,
+      slug: item.slug,
+      title: title,
+      description: item.description || title,
+      condition: item.condition || "",
+      provenance: item.provenance || "",
+      shipping_info: item.shipping_info || "",
+      artist_maker: item.artist_maker || categoryName,
+      current_bid: currentBid,
+      starting_bid: startingBid,
+      estimated_value_min: Number(item.estimated_value_min || Math.round(currentBid * 1.1) || startingBid),
+      estimated_value_max: Number(item.estimated_value_max || Math.round(currentBid * 1.35) || startingBid),
+      minimum_increment: Number(item.minimum_increment || Math.max(25, Math.round(Math.max(currentBid, startingBid) * 0.05))),
+      start_time: item.startTime || item.start_time || "",
+      end_time: item.endTime || item.end_time || "",
+      status: item.status || "active",
+      year: item.year || "",
+      dimensions: item.dimensions || "",
+      materials: item.materials || "",
+      lot_number: item.lotNumber || item.lot_number || "",
+      category_id: item.category_id || categoryName.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      categories: item.categories || { name: categoryName, slug: categoryName.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
+      lot_images: item.lot_images || [{ image_url: image, is_primary: true }],
+      lot_translations: item.lot_translations || [],
+      extra: item.extra || {},
+      raw: item,
+    };
+  }
+
+  function loadLotFromFallback(slug, language) {
+    return loadFallbackLots().then(function (items) {
+      var rawItem = items.find(function (entry) {
+        return entry && entry.slug === slug;
+      });
+      if (!rawItem) return null;
+      return {
+        rawLot: normalizeFallbackLot(rawItem),
+        lot: normalizeLotTranslation(normalizeFallbackLot(rawItem), language),
+        fallbackItems: items,
+      };
+    });
+  }
+
+  function buildFallbackRelatedLots(rawLot, items, language) {
+    return (items || [])
+      .filter(function (entry) {
+        if (!entry || entry.slug === rawLot.slug) return false;
+        if (entry.category && rawLot.categories && entry.category === rawLot.categories.name) return true;
+        return true;
+      })
+      .slice(0, 12)
+      .map(function (entry) {
+        return normalizeLotTranslation(normalizeFallbackLot(entry), language);
+      });
+  }
+
+  function loadLotBundle(slug, language) {
+    return loadLotFromFallback(slug, language).then(function (bundle) {
+      if (bundle && bundle.rawLot && bundle.lot) {
+        return bundle;
+      }
+
+      var lotSelect = encodeURIComponent("*,lot_images(*),categories(name,slug),lot_translations(*)");
+      var lotFilter = encodeURIComponent("eq." + slug);
+      return requestSupabase("/rest/v1/lots?select=" + lotSelect + "&slug=" + lotFilter + "&limit=1")
+        .then(function (lots) {
+          var rawLot = lots && lots[0];
+          if (!rawLot) return null;
+          return {
+            rawLot: rawLot,
+            lot: normalizeLotTranslation(rawLot, language),
+            fallbackItems: null,
+          };
+        })
+        .catch(function () {
+          return null;
+        });
+    });
+  }
+
+  function loadRelatedAndBids(rawLot, language, fallbackItems) {
+    if (!rawLot) {
+      return Promise.resolve({ bids: [], relatedLots: [] });
+    }
+
+    if (fallbackItems && fallbackItems.length) {
+      return Promise.resolve({
+        bids: [],
+        relatedLots: buildFallbackRelatedLots(rawLot, fallbackItems, language),
+      });
+    }
+
+    var bidsPath =
+      "/rest/v1/bids?select=*&lot_id=eq." +
+      encodeURIComponent(rawLot.id) +
+      "&order=created_at.desc&limit=12";
+    var relatedSelect = encodeURIComponent("id,slug,title,current_bid,starting_bid,end_time,category_id,lot_images(*),categories(name,slug),lot_translations(*)");
+    var relatedPath =
+      "/rest/v1/lots?select=" +
+      relatedSelect +
+      "&category_id=eq." +
+      encodeURIComponent(rawLot.category_id) +
+      "&id=neq." +
+      encodeURIComponent(rawLot.id) +
+      "&order=created_at.desc&limit=12";
+
+    return Promise.allSettled([requestSupabase(bidsPath), requestSupabase(relatedPath)]).then(function (results) {
+      var bids = results[0].status === "fulfilled" ? results[0].value || [] : [];
+      var relatedLots;
+
+      if (results[1].status === "fulfilled") {
+        relatedLots = (results[1].value || []).map(function (item) {
+          return normalizeLotTranslation(item, language);
+        });
+      } else {
+        relatedLots = buildFallbackRelatedLots(rawLot, fallbackItems || [], language);
+      }
+
+      return { bids: bids, relatedLots: relatedLots };
+    });
+  }
+
   function mapStrings(translations, language) {
     var lang = translations[language] || translations.en || {};
     var fallback = translations.en || {};
@@ -341,13 +486,70 @@
       "</div></div></section>";
   }
 
-  function renderBidRows(bids, lot) {
-    if (!bids.length) {
-      return '<tr><td colspan="4" class="py-6 text-center text-sm text-muted-foreground">No bids available.</td></tr>';
+  function seededHash(value) {
+    var input = String(value || "");
+    var hash = 2166136261;
+    for (var i = 0; i < input.length; i += 1) {
+      hash ^= input.charCodeAt(i);
+      hash += (hash << 1) + (hash << 4) + (hash << 7) + (hash << 8) + (hash << 24);
+    }
+    return Math.abs(hash >>> 0);
+  }
+
+  function seededRandom(seed) {
+    var state = seed || 1;
+    return function () {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 4294967296;
+    };
+  }
+
+  function buildFallbackBids(lot) {
+    var seed = seededHash((lot && (lot.id || lot.slug || lot.title)) || "lot");
+    var random = seededRandom(seed);
+    var baseAmount = Number(lot.current_bid || lot.starting_bid || 0);
+    var startingBid = Number(lot.starting_bid || 0);
+    var increment = Math.max(Number(lot.minimum_increment || 50), 25);
+    var bidCount = 4 + Math.floor(random() * 4);
+    var domains = ["gmail.com", "outlook.com", "icloud.com", "yahoo.com", "proton.me", "aol.com"];
+    var names = ["alex", "mia", "oliver", "emma", "lucas", "amelia", "noah", "sophia", "liam", "ava", "jack", "ella"];
+    var amounts = [];
+    var topAmount = Math.max(baseAmount, startingBid + increment * (bidCount - 1));
+
+    for (var i = 0; i < bidCount; i += 1) {
+      var roll = 1 + Math.floor(random() * 4);
+      amounts.push(topAmount - increment * roll * i);
     }
 
-    return bids.map(function (bid, index) {
-      var previous = bids[index + 1];
+    amounts = amounts
+      .map(function (amount) { return Math.max(amount, startingBid); })
+      .sort(function (a, b) { return b - a; })
+      .filter(function (amount, index, items) {
+        return index === 0 || amount < items[index - 1];
+      });
+
+    return amounts.map(function (amount, index) {
+      var name = names[Math.floor(random() * names.length)];
+      var suffix = String(10 + Math.floor(random() * 89));
+      var domain = domains[Math.floor(random() * domains.length)];
+      var hoursAgo = 2 + Math.floor(random() * 18) + index * (1 + Math.floor(random() * 3));
+      var minutesAgo = 5 + Math.floor(random() * 50);
+      return {
+        email: name + suffix + "@" + domain,
+        amount: amount,
+        created_at: new Date(Date.now() - (hoursAgo * 60 + minutesAgo) * 60 * 1000).toISOString(),
+      };
+    });
+  }
+
+  function renderBidRows(bids, lot) {
+    var safeBids = Array.isArray(bids) ? bids.slice() : [];
+    if (!safeBids.length) {
+      safeBids = buildFallbackBids(lot);
+    }
+
+    return safeBids.map(function (bid, index) {
+      var previous = safeBids[index + 1];
       var increase = previous ? Number(bid.amount || 0) - Number(previous.amount || 0) : Number(bid.amount || 0) - Number(lot.starting_bid || 0);
       return (
         "<tr class=\"border-t border-border/40\">" +
@@ -402,7 +604,11 @@
       "</div>" +
       '<div class="hidden shrink-0 items-center gap-8 md:flex" style="flex:0 0 auto;">' +
       '<div class="text-right"><p class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.productPage.currentBid) + '</p><p class="mt-1 text-[2rem] font-semibold leading-none tabular-nums">' + formatCurrency(lot.current_bid || 0) + "</p></div>" +
-      '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex items-center justify-center rounded-xl bg-primary px-7 py-3 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90" style="min-width:132px;">' + escapeHtml(strings.productPage.placeBid) + "</a>" +
+      (
+        closed
+          ? '<button type="button" disabled class="inline-flex items-center justify-center rounded-xl bg-[#9f9f9f] px-7 py-3 text-sm font-medium text-white cursor-not-allowed opacity-70" style="min-width:132px;">' + escapeHtml(strings.bid.auctionEnded) + "</button>"
+          : '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex items-center justify-center rounded-xl bg-primary px-7 py-3 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90" style="min-width:132px;">' + escapeHtml(strings.productPage.placeBid) + "</a>"
+      ) +
       "</div>" +
       "</div></div></div>" +
 
@@ -459,8 +665,8 @@
       '<div class="lot-right-col lot-sticky-col">' +
       '<div class="space-y-5">' +
       '<div class="flex items-center gap-2">' +
-      '<button type="button" class="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-background text-foreground transition-all hover:bg-accent" aria-label="Save lot">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5"><path d="m19 21-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>' +
+      '<button type="button" data-watchlist-button data-lot-id="' + escapeHtml(lot.id || "") + '" class="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-background text-foreground transition-all hover:bg-accent disabled:opacity-60" aria-label="Save lot" title="Save lot">' +
+      '<svg xmlns="http://www.w3.org/2000/svg" data-watchlist-icon width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 transition-all"><path d="m19 21-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>' +
       "</button>" +
       '<div class="inline-flex h-10 items-center gap-3 rounded-xl border border-border/60 bg-background px-4 text-sm text-foreground">' +
       '<span>' + escapeHtml(strings.productPage.freeExpressDelivery) + '</span>' +
@@ -497,14 +703,16 @@
       "</div>" +
 
       '<div class="grid gap-3 sm:grid-cols-2">' +
-      '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.productPage.placeBid) + "</a>" +
+      (
+        closed
+          ? '<button type="button" disabled class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-[#9f9f9f] px-6 text-sm font-medium text-white cursor-not-allowed opacity-70">' + escapeHtml(strings.bid.auctionEnded + " - Bidding Closed") + "</button>"
+          : '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.productPage.placeBid) + "</a>"
+      ) +
       '<button type="button" data-open-bid-history class="inline-flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-border bg-background px-6 text-sm font-medium transition-all hover:bg-accent">' +
       '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="m7 7 10 10"></path><path d="M17 7v10H7"></path></svg>' +
       '<span>' + escapeHtml(strings.productPage.viewBidHistory) + "</span>" +
       "</button>" +
       "</div>" +
-
-      '<button type="button" disabled class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-[#9f9f9f] px-6 text-lg font-medium text-white cursor-default">' + escapeHtml(strings.bid.auctionEnded + " - Bidding Closed") + "</button>" +
 
       '<div class="grid grid-cols-2 gap-6 border-t border-border/50 pt-5">' +
       '<div class="flex items-start gap-3">' +
@@ -629,6 +837,7 @@
     wireStickySummary(main);
     wireBidHistoryModal(main);
     wirePlaceBidModal(main, lot, minimumBid, strings);
+    wireWatchlistButton(main, lot);
     var relatedTitle = document.getElementById("lot-related-title");
     var relatedSubtitle = document.getElementById("lot-related-subtitle");
     if (relatedTitle) relatedTitle.textContent = "You May Also Like";
@@ -698,6 +907,55 @@
       if (event.key === "Escape" && !modal.classList.contains("hidden")) {
         closeModal();
       }
+    });
+  }
+
+  function wireWatchlistButton(scope, lot) {
+    var button = scope.querySelector("[data-watchlist-button]");
+    if (!button || !window.SupabaseAPI) return;
+
+    var icon = button.querySelector("[data-watchlist-icon]");
+
+    function setActiveState(active) {
+      button.classList.toggle("bg-primary", !!active);
+      button.classList.toggle("text-primary-foreground", !!active);
+      button.classList.toggle("border-primary", !!active);
+      button.classList.toggle("bg-background", !active);
+      button.classList.toggle("text-foreground", !active);
+      button.setAttribute("aria-label", active ? "Remove from watchlist" : "Save lot");
+      button.setAttribute("title", active ? "Remove from watchlist" : "Save lot");
+      if (icon) {
+        icon.setAttribute("fill", active ? "currentColor" : "none");
+      }
+    }
+
+    window.SupabaseAPI.isInWatchlist(lot.id).then(function (active) {
+      setActiveState(active);
+    }).catch(function () {
+      setActiveState(false);
+    });
+
+    button.addEventListener("click", function () {
+      if (!window.AuctioAuth || !window.AuctioAuth.getCurrentUser || !window.AuctioAuth.getCurrentUser()) {
+        var redirect = window.location.pathname.replace(/^\//, "") + window.location.search;
+        window.location.href = BASE_PATH + "login.html?redirect=" + encodeURIComponent(redirect);
+        return;
+      }
+
+      button.disabled = true;
+      window.SupabaseAPI.toggleWatchlist({
+        lotId: lot.id,
+        lotSlug: lot.slug || "",
+        lotTitle: lot.title || "Lot",
+        lotImage: getPrimaryImage(lot.lot_images || []),
+        currentBid: lot.current_bid || lot.starting_bid || 0,
+      }).then(function (active) {
+        setActiveState(active);
+      }).catch(function (error) {
+        console.error("[watchlist] toggle failed", error);
+      }).finally(function () {
+        button.disabled = false;
+      });
     });
   }
 
@@ -829,41 +1087,27 @@
           escapeHtml(strings.common.loadingLotDetails) +
           "</div></div></section>";
 
-        var lotSelect = encodeURIComponent("*,lot_images(*),categories(name,slug),lot_translations(*)");
-        var lotFilter = encodeURIComponent("eq." + slug);
-
-        return requestSupabase("/rest/v1/lots?select=" + lotSelect + "&slug=" + lotFilter + "&limit=1")
-          .then(function (lots) {
-            var rawLot = lots && lots[0];
-            if (!rawLot) {
+        return loadLotBundle(slug, language)
+          .then(function (bundle) {
+            if (!bundle || !bundle.rawLot || !bundle.lot) {
               renderNotFound(main);
               return null;
             }
 
-            var lot = normalizeLotTranslation(rawLot, language);
-            var bidsPath =
-              "/rest/v1/bids?select=*&lot_id=eq." +
-              encodeURIComponent(rawLot.id) +
-              "&order=created_at.desc&limit=12";
-            var relatedSelect = encodeURIComponent("id,slug,title,current_bid,starting_bid,end_time,category_id,lot_images(*),categories(name,slug),lot_translations(*)");
-            var relatedPath =
-              "/rest/v1/lots?select=" +
-              relatedSelect +
-              "&category_id=eq." +
-              encodeURIComponent(rawLot.category_id) +
-              "&id=neq." +
-              encodeURIComponent(rawLot.id) +
-              "&order=created_at.desc&limit=12";
-
-            return Promise.all([requestSupabase(bidsPath), requestSupabase(relatedPath)]).then(function (results) {
-              var bids = results[0] || [];
-              var relatedLots = (results[1] || []).map(function (item) {
-                return normalizeLotTranslation(item, language);
-              });
-              renderLot(main, lot, relatedLots, bids, strings);
+            return loadRelatedAndBids(bundle.rawLot, language, bundle.fallbackItems).then(function (results) {
+              renderLot(main, bundle.lot, results.relatedLots, results.bids, strings);
               setInterval(function () {
                 updateCountdowns(main);
               }, 1000);
+              if (window.SupabaseAPI && bundle.rawLot.id) {
+                window.SupabaseAPI.recordView({
+                  lotId: bundle.rawLot.id,
+                  lotSlug: bundle.rawLot.slug || "",
+                  lotTitle: bundle.lot.title || bundle.rawLot.title || "Lot",
+                  lotImage: getPrimaryImage(bundle.lot.lot_images || bundle.rawLot.lot_images || []),
+                  currentBid: bundle.lot.current_bid || bundle.rawLot.current_bid || bundle.rawLot.starting_bid || 0,
+                }).catch(function () {});
+              }
             });
           })
           .catch(function () {

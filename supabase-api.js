@@ -1,0 +1,465 @@
+(function () {
+  'use strict';
+
+  function getClient() {
+    return window._supabase || null;
+  }
+
+  function getProfileStorageKey(userId) {
+    return userId ? 'auctio_profile_' + userId : '';
+  }
+
+  function getWatchlistStorageKey(userId) {
+    return userId ? 'auctio_watchlist_' + userId : '';
+  }
+
+  function getHistoryStorageKey(userId) {
+    return userId ? 'auctio_history_' + userId : '';
+  }
+
+  function getBidsStorageKey(userId) {
+    return userId ? 'auctio_bids_' + userId : '';
+  }
+
+  function readStoredProfile(userId) {
+    if (!userId) return {};
+    try {
+      return JSON.parse(localStorage.getItem(getProfileStorageKey(userId))) || {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function writeStoredProfile(userId, value) {
+    if (!userId) return;
+    try {
+      localStorage.setItem(getProfileStorageKey(userId), JSON.stringify(value || {}));
+    } catch (_error) {}
+  }
+
+  function readStoredWatchlist(userId) {
+    if (!userId) return [];
+    try {
+      var value = JSON.parse(localStorage.getItem(getWatchlistStorageKey(userId))) || [];
+      return Array.isArray(value) ? value : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function writeStoredWatchlist(userId, items) {
+    if (!userId) return;
+    try {
+      localStorage.setItem(getWatchlistStorageKey(userId), JSON.stringify(Array.isArray(items) ? items : []));
+      window.dispatchEvent(new CustomEvent('auctio:watchlist'));
+    } catch (_error) {}
+  }
+
+  function readStoredHistory(userId) {
+    if (!userId) return [];
+    try {
+      var value = JSON.parse(localStorage.getItem(getHistoryStorageKey(userId))) || [];
+      return Array.isArray(value) ? value : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function writeStoredHistory(userId, items) {
+    if (!userId) return;
+    try {
+      localStorage.setItem(getHistoryStorageKey(userId), JSON.stringify(Array.isArray(items) ? items : []));
+      window.dispatchEvent(new CustomEvent('auctio:history'));
+    } catch (_error) {}
+  }
+
+  function readStoredBids(userId) {
+    if (!userId) return [];
+    try {
+      var value = JSON.parse(localStorage.getItem(getBidsStorageKey(userId))) || [];
+      return Array.isArray(value) ? value : [];
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function writeStoredBids(userId, items) {
+    if (!userId) return;
+    try {
+      localStorage.setItem(getBidsStorageKey(userId), JSON.stringify(Array.isArray(items) ? items : []));
+      window.dispatchEvent(new CustomEvent('auctio:bids'));
+    } catch (_error) {}
+  }
+
+  async function getUserId() {
+    var sb = getClient();
+    if (!sb) return null;
+    var res = await sb.auth.getSession();
+    return res.data && res.data.session ? res.data.session.user.id : null;
+  }
+
+  function withTimeout(promise, ms, fallbackValue) {
+    return Promise.race([
+      promise,
+      new Promise(function (resolve) {
+        setTimeout(function () { resolve(fallbackValue); }, ms);
+      })
+    ]);
+  }
+
+  // ─── Profile ────────────────────────────────────────────────────────────────
+
+  async function getProfile() {
+    var sb = getClient(); if (!sb) return null;
+    var uid = await getUserId(); if (!uid) return null;
+    var sessionRes = await sb.auth.getSession();
+    var session = sessionRes.data && sessionRes.data.session;
+    var user = session && session.user;
+    var stored = readStoredProfile(uid);
+    var meta = (user && user.user_metadata) || {};
+    return {
+      id: uid,
+      email: (user && user.email) || '',
+      first_name: meta.first_name || meta.firstName || '',
+      last_name: meta.last_name || meta.lastName || '',
+      phone: meta.phone || '',
+      country: stored.country || '',
+      address: stored.street || '',
+      city: stored.city || '',
+      state: stored.state || '',
+      postal_code: stored.zip || ''
+    };
+  }
+
+  async function updateProfile(data) {
+    var sb = getClient(); if (!sb) return null;
+    var uid = await getUserId(); if (!uid) throw new Error('Not authenticated.');
+    var sessionRes = await sb.auth.getSession();
+    var session = sessionRes.data && sessionRes.data.session;
+    if (!session || !session.user) throw new Error('Session expired. Please log in again.');
+
+    // Also update auth user metadata for name/phone
+    if (data.firstName !== undefined || data.lastName !== undefined || data.phone !== undefined) {
+      var authRes = await sb.auth.updateUser({
+        data: {
+          first_name: data.firstName,
+          last_name: data.lastName,
+          phone: data.phone,
+        }
+      });
+      if (authRes.error) throw new Error(authRes.error.message);
+    }
+
+    var stored = readStoredProfile(uid);
+    var nextStored = {
+      country: data.country !== undefined ? data.country : stored.country || '',
+      street: data.address !== undefined ? data.address : stored.street || '',
+      city: data.city !== undefined ? data.city : stored.city || '',
+      state: data.state !== undefined ? data.state : stored.state || '',
+      zip: data.postalCode !== undefined ? data.postalCode : stored.zip || ''
+    };
+    writeStoredProfile(uid, nextStored);
+
+    // Refresh legacy localStorage
+    if (sessionRes.data && sessionRes.data.session) {
+      var profile = await getProfile();
+      if (profile && window.AuctioAuth) {
+        var users;
+        try { users = JSON.parse(localStorage.getItem('auctio_users')) || []; } catch(e) { users = []; }
+        var idx = users.findIndex(function(u) { return u.id === uid; });
+        var record = {
+          id: uid,
+          firstName: profile.first_name || '',
+          lastName: profile.last_name || '',
+          email: profile.email || sessionRes.data.session.user.email || '',
+          phone: profile.phone || '',
+          password: '__supabase__',
+          createdAt: profile.created_at || '',
+        };
+        if (idx >= 0) users[idx] = record;
+        else users.push(record);
+        localStorage.setItem('auctio_users', JSON.stringify(users));
+        window.dispatchEvent(new CustomEvent('auctio:auth'));
+      }
+    }
+    return true;
+  }
+
+  // ─── Watchlist ───────────────────────────────────────────────────────────────
+
+  async function getWatchlist() {
+    var uid = await getUserId(); if (!uid) return [];
+    return readStoredWatchlist(uid)
+      .slice()
+      .sort(function (a, b) {
+        return new Date(b.addedAt || 0).getTime() - new Date(a.addedAt || 0).getTime();
+      });
+  }
+
+  async function isInWatchlist(lotId) {
+    var uid = await getUserId(); if (!uid) return false;
+    return readStoredWatchlist(uid).some(function (item) {
+      return item && String(item.lotId) === String(lotId);
+    });
+  }
+
+  async function addToWatchlist(lotData) {
+    var uid = await getUserId(); if (!uid) throw new Error('Please log in to save lots.');
+    var payload = typeof lotData === 'object' && lotData
+      ? lotData
+      : { lotId: lotData };
+    var lotId = String(payload.lotId || '').trim();
+    if (!lotId) throw new Error('This lot cannot be saved.');
+
+    var items = readStoredWatchlist(uid);
+    if (items.some(function (item) { return item && String(item.lotId) === lotId; })) {
+      return true;
+    }
+
+    items.unshift({
+      id: 'watch-' + lotId,
+      lotId: lotId,
+      lotSlug: payload.lotSlug || '',
+      lotTitle: payload.lotTitle || 'Lot',
+      lotImage: payload.lotImage || '',
+      currentBid: Number(payload.currentBid || 0),
+      addedAt: new Date().toISOString(),
+    });
+    writeStoredWatchlist(uid, items);
+    return true;
+  }
+
+  async function removeFromWatchlist(lotId) {
+    var uid = await getUserId(); if (!uid) return;
+    var items = readStoredWatchlist(uid).filter(function (item) {
+      return !item || String(item.lotId) !== String(lotId);
+    });
+    writeStoredWatchlist(uid, items);
+  }
+
+  async function toggleWatchlist(lotData) {
+    var lotId = typeof lotData === 'object' && lotData ? lotData.lotId : lotData;
+    var inList = await isInWatchlist(lotId);
+    if (inList) { await removeFromWatchlist(lotId); return false; }
+    else { await addToWatchlist(lotData); return true; }
+  }
+
+  // ─── Viewing History ─────────────────────────────────────────────────────────
+
+  async function getViewingHistory() {
+    var uid = await getUserId(); if (!uid) return [];
+    return readStoredHistory(uid)
+      .slice()
+      .sort(function (a, b) {
+        return new Date(b.viewedAt || 0).getTime() - new Date(a.viewedAt || 0).getTime();
+      })
+      .slice(0, 50);
+  }
+
+  async function recordView(lotData) {
+    var uid = await getUserId(); if (!uid) return;
+    var payload = typeof lotData === 'object' && lotData ? lotData : { lotId: lotData };
+    var lotId = String(payload.lotId || '').trim();
+    if (!lotId) return;
+
+    var items = readStoredHistory(uid).filter(function (item) {
+      return item && String(item.lotId) !== lotId;
+    });
+
+    items.unshift({
+      id: 'history-' + lotId,
+      lotId: lotId,
+      lotSlug: payload.lotSlug || '',
+      lotTitle: payload.lotTitle || 'Lot',
+      lotImage: payload.lotImage || '',
+      currentBid: Number(payload.currentBid || 0),
+      viewedAt: new Date().toISOString(),
+    });
+
+    writeStoredHistory(uid, items.slice(0, 50));
+  }
+
+  async function clearViewingHistory() {
+    var uid = await getUserId(); if (!uid) return;
+    writeStoredHistory(uid, []);
+  }
+
+  // ─── Bids ────────────────────────────────────────────────────────────────────
+
+  async function addStoredBid(bidData) {
+    var uid = await getUserId(); if (!uid) return false;
+    var payload = bidData || {};
+    if (!payload.lotId) return false;
+
+    var items = readStoredBids(uid).filter(function (item) {
+      return !(item && item.id === payload.id);
+    });
+
+    items.unshift({
+      id: payload.id || ('bid-' + payload.lotId + '-' + Date.now()),
+      lotId: payload.lotId,
+      lotSlug: payload.lotSlug || '',
+      lotTitle: payload.lotTitle || 'Lot',
+      lotImage: payload.lotImage || '',
+      bidAmount: Number(payload.bidAmount || 0),
+      currentBid: Number(payload.currentBid || payload.bidAmount || 0),
+      status: payload.status || 'active',
+      placedAt: payload.placedAt || new Date().toISOString(),
+    });
+
+    writeStoredBids(uid, items.slice(0, 100));
+    return true;
+  }
+
+  async function getBids() {
+    var uid = await getUserId(); if (!uid) return [];
+    var localBids = readStoredBids(uid)
+      .slice()
+      .sort(function (a, b) {
+        return new Date(b.placedAt || 0).getTime() - new Date(a.placedAt || 0).getTime();
+      });
+    if (localBids.length) return localBids;
+
+    var sb = getClient(); if (!sb) return [];
+    var res = await withTimeout(sb
+      .from('bids')
+      .select('id, lot_id, amount, status, created_at, lots(id, slug, title, current_bid, lot_images(image_url, is_primary))')
+      .eq('user_id', uid)
+      .eq('is_simulated', false)
+      .order('created_at', { ascending: false })
+      .limit(100), 2500, { data: null, error: new Error('timeout') });
+    if (res.error) {
+      // Fallback without join if FK not set up
+      var fallback = await withTimeout(sb
+        .from('bids')
+        .select('id, lot_id, amount, status, created_at')
+        .eq('user_id', uid)
+        .eq('is_simulated', false)
+        .order('created_at', { ascending: false })
+        .limit(100), 2000, { data: [], error: new Error('timeout') });
+      if (fallback.error) return [];
+      var fallbackItems = (fallback.data || []).map(function(item) {
+        return {
+          id: item.id,
+          lotId: item.lot_id,
+          lotSlug: '',
+          lotTitle: 'Lot #' + item.lot_id.slice(0, 8),
+          lotImage: '',
+          bidAmount: item.amount || 0,
+          currentBid: item.amount || 0,
+          status: item.status || 'active',
+          placedAt: item.created_at,
+        };
+      });
+      writeStoredBids(uid, fallbackItems);
+      return fallbackItems;
+    }
+    var mapped = (res.data || []).map(function(item) {
+      var lot = item.lots || {};
+      var imgs = lot.lot_images || [];
+      var img = imgs.find(function(i) { return i.is_primary; }) || imgs[0] || {};
+      return {
+        id: item.id,
+        lotId: item.lot_id,
+        lotSlug: lot.slug || '',
+        lotTitle: lot.title || 'Lot',
+        lotImage: img.image_url || '',
+        bidAmount: item.amount || 0,
+        currentBid: lot.current_bid || item.amount || 0,
+        status: item.status || 'active',
+        placedAt: item.created_at,
+      };
+    });
+    writeStoredBids(uid, mapped);
+    return mapped;
+  }
+
+  // ─── Notification Settings ───────────────────────────────────────────────────
+
+  async function getNotificationSettings() {
+    var sb = getClient(); if (!sb) return null;
+    var uid = await getUserId(); if (!uid) return null;
+    var stored = readStoredProfile(uid);
+    var notif = { bid_updates: true, auction_reminders: true, new_listings: false, newsletter: false };
+    // Attach profile address data so settings page can populate fields
+    notif._profile = {
+      country: stored.country || '',
+      street: stored.street || '',
+      city: stored.city || '',
+      state: stored.state || '',
+      zip: stored.zip || ''
+    };
+    return notif;
+  }
+
+  async function updateNotificationSettings(settings) {
+    return settings || null;
+  }
+
+  // ─── Counts (for overview) ───────────────────────────────────────────────────
+
+  async function getCounts() {
+    var sb = getClient(); if (!sb) return { bids: 0, watchlist: 0, history: 0 };
+    var uid = await getUserId(); if (!uid) return { bids: 0, watchlist: 0, history: 0 };
+    var watchlist = readStoredWatchlist(uid);
+    var bids = readStoredBids(uid);
+    var history = readStoredHistory(uid);
+    if (bids.length) {
+      return {
+        bids: bids.length,
+        watchlist: watchlist.length,
+        history: history.length,
+      };
+    }
+
+    var [bidsRes] = await Promise.all([
+      sb.from('bids').select('id', { count: 'exact', head: true }).eq('user_id', uid).eq('is_simulated', false),
+    ]);
+
+    return {
+      bids: bidsRes.count || 0,
+      watchlist: watchlist.length,
+      history: history.length,
+    };
+  }
+
+  // ─── Change Password ─────────────────────────────────────────────────────────
+
+  async function changePassword(currentPassword, newPassword) {
+    var sb = getClient(); if (!sb) throw new Error('Not available.');
+    var uid = await getUserId(); if (!uid) throw new Error('Not authenticated.');
+
+    // Re-authenticate to verify current password
+    var sessionRes = await sb.auth.getSession();
+    if (!sessionRes.data || !sessionRes.data.session) throw new Error('Session expired. Please log in again.');
+    var email = sessionRes.data.session.user.email;
+
+    var verifyRes = await sb.auth.signInWithPassword({ email: email, password: currentPassword });
+    if (verifyRes.error) throw new Error('Current password is incorrect.');
+
+    var updateRes = await sb.auth.updateUser({ password: newPassword });
+    if (updateRes.error) throw new Error(updateRes.error.message);
+    return true;
+  }
+
+  // ─── Export ──────────────────────────────────────────────────────────────────
+
+  window.SupabaseAPI = {
+    getProfile,
+    updateProfile,
+    getWatchlist,
+    isInWatchlist,
+    addToWatchlist,
+    removeFromWatchlist,
+    toggleWatchlist,
+    getViewingHistory,
+    recordView,
+    clearViewingHistory,
+    getBids,
+    getCounts,
+    getNotificationSettings,
+    updateNotificationSettings,
+    changePassword,
+    addStoredBid,
+  };
+})();

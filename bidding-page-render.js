@@ -23,6 +23,16 @@
     });
   }
 
+  function loadFallbackLots() {
+    return loadJson(BASE_PATH + "data/all-shop-lots.json")
+      .then(function (items) {
+        return Array.isArray(items) ? items : [];
+      })
+      .catch(function () {
+        return [];
+      });
+  }
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -81,6 +91,48 @@
       lot_translations: item.lot_translations || [],
       raw: item,
     };
+  }
+
+  function normalizeFallbackLot(item) {
+    var categoryName = item.category || "Auction";
+    var currentBid = Number(item.currentBid || item.current_bid || 0);
+    var startingBid = Number(item.startingBid || item.starting_bid || currentBid || 0);
+    var image = item.image || item.image_url || BASE_PATH + "placeholder.svg";
+    return {
+      id: item.id,
+      slug: item.slug,
+      title: item.title || "Auction Lot",
+      description: item.description || item.title || "",
+      current_bid: currentBid,
+      starting_bid: startingBid,
+      minimum_increment: Number(item.minimum_increment || Math.max(25, Math.round(Math.max(currentBid, startingBid) * 0.05))),
+      estimated_value_min: Number(item.estimated_value_min || Math.round(currentBid * 1.1) || startingBid),
+      estimated_value_max: Number(item.estimated_value_max || Math.round(currentBid * 1.35) || startingBid),
+      lot_images: item.lot_images || [{ image_url: image, is_primary: true }],
+      categories: item.categories || { name: categoryName, slug: categoryName.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
+      lot_translations: item.lot_translations || [],
+      raw: item,
+    };
+  }
+
+  function loadLotBundle(slug, language) {
+    return loadFallbackLots().then(function (items) {
+      var fallbackItem = items.find(function (entry) {
+        return entry && entry.slug === slug;
+      });
+      if (fallbackItem) {
+        return normalizeLotTranslation(normalizeFallbackLot(fallbackItem), language);
+      }
+
+      return requestSupabase("/rest/v1/lots?select=id,slug,title,description,current_bid,starting_bid,minimum_increment,estimated_value_min,estimated_value_max,lot_images(*),categories(name,slug),lot_translations(*)&slug=eq." + encodeURIComponent(slug) + "&limit=1")
+        .then(function (results) {
+          var rawLot = (results || [])[0];
+          return rawLot ? normalizeLotTranslation(rawLot, language) : null;
+        })
+        .catch(function () {
+          return null;
+        });
+    });
   }
 
   var COUNTRIES = [
@@ -669,8 +721,85 @@
       });
     });
 
+    // Pre-fill step 2 form with profile data for logged-in users
+    if (window.SupabaseAPI) {
+      window.SupabaseAPI.getProfile().then(function (profile) {
+        if (!profile) return;
+        var fields = {
+          firstName: profile.first_name || "",
+          lastName: profile.last_name || "",
+          email: profile.email || "",
+          phone: profile.phone || "",
+          address: profile.address || "",
+          city: profile.city || "",
+          state: profile.state || "",
+          postalCode: profile.postal_code || "",
+          country: profile.country || "",
+        };
+        Object.keys(fields).forEach(function (key) {
+          if (!fields[key]) return;
+          var el = document.querySelector('[data-field="' + key + '"]');
+          if (el) el.value = fields[key];
+        });
+      }).catch(function () {});
+    }
+
     updateSummary();
     renderStep();
+
+    // Listen for payment success from iframe
+    window.addEventListener("message", function handlePayment(event) {
+      var data = event.data;
+      if (!data) return;
+      var isSuccess =
+        data === "payment_success" ||
+        data.type === "payment_success" ||
+        data.status === "success" ||
+        data.success === true ||
+        data.event === "payment_success" ||
+        data.result === "success";
+      if (!isSuccess) return;
+
+      window.removeEventListener("message", handlePayment);
+
+      // Show success card, hide step panels
+      stepNodes.forEach(function (node) {
+        node.classList.add("hidden");
+        node.style.display = "none";
+      });
+      if (successCard) {
+        successCard.classList.remove("hidden");
+        successCard.style.display = "block";
+        successCard.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+
+      // Record bid in database
+      if (window.SupabaseAPI && lot && lot.id) {
+        window._supabase && window._supabase.auth.getSession().then(function (res) {
+          var session = res.data && res.data.session;
+          if (!session) return;
+          window.SupabaseAPI.addStoredBid({
+            id: 'bid-' + lot.id + '-' + Date.now(),
+            lotId: lot.id,
+            lotSlug: lot.slug || '',
+            lotTitle: lot.title || 'Lot',
+            lotImage: (lot.lot_images && lot.lot_images[0] && (lot.lot_images[0].image_url || lot.lot_images[0].image)) || '',
+            bidAmount: selectedBid,
+            currentBid: selectedBid,
+            status: 'active',
+            placedAt: new Date().toISOString(),
+          }).catch(function () {});
+          window._supabase.from("bids").insert({
+            user_id: session.user.id,
+            lot_id: lot.id,
+            amount: selectedBid,
+            status: "active",
+            is_simulated: false,
+            created_at: new Date().toISOString(),
+          }).then(function () {}).catch(function () {});
+        }).catch(function () {});
+      }
+    });
   }
 
   function init() {
@@ -685,17 +814,16 @@
 
     Promise.all([
       loadJson(BASE_PATH + "data/site-translations.json"),
-      requestSupabase("/rest/v1/lots?select=id,slug,title,description,current_bid,starting_bid,minimum_increment,estimated_value_min,estimated_value_max,lot_images(*),categories(name,slug),lot_translations(*)&slug=eq." + encodeURIComponent(slug) + "&limit=1"),
+      loadLotBundle(slug, language),
     ])
       .then(function (results) {
         var translations = results[0];
-        var rawLot = (results[1] || [])[0];
+        var lot = results[1];
         var strings = pickStrings(translations, language);
-        if (!rawLot) {
+        if (!lot) {
           renderNotFound(main, strings.validation.lotInfoMissing);
           return;
         }
-        var lot = normalizeLotTranslation(rawLot, language);
         renderPage(main, lot, strings);
       })
       .catch(function () {
