@@ -953,19 +953,18 @@
     }
 
     return `
-      <div class="mb-6 rounded-xl border border-border/60 bg-muted/30 p-4">
-        <div class="flex items-center gap-3">
-          <span class="flex h-11 w-11 items-center justify-center rounded-full bg-black text-sm font-semibold text-white">${escapeHtml(getUserInitials(user))}</span>
-          <div class="min-w-0">
-            <p class="truncate text-sm font-medium">${escapeHtml(user.fullName)}</p>
-            <p class="truncate text-xs text-muted-foreground">${escapeHtml(user.email)}</p>
-          </div>
+      <a class="flex items-center gap-3 rounded-lg border border-border bg-muted/30 p-4 mb-4 transition-colors hover:bg-muted/50" href="${basePath}account.html">
+        <div class="flex h-12 w-12 flex-shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-amber-500 to-amber-700 text-lg font-semibold text-white">${escapeHtml(getUserInitials(user).charAt(0))}</div>
+        <div class="min-w-0 flex-1">
+          <div class="truncate text-sm font-semibold">${escapeHtml(user.fullName)}</div>
+          <div class="truncate text-xs text-muted-foreground">${escapeHtml(user.email)}</div>
         </div>
-        <div class="mt-4 flex gap-2">
-          <a class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all border shadow-xs hover:bg-accent hover:text-accent-foreground h-9 px-4 py-2 flex-1 bg-transparent" href="${basePath}account.html">Account</a>
-          <button type="button" data-mobile-logout class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all bg-primary text-primary-foreground hover:bg-primary/90 h-9 px-4 py-2 flex-1">Log out</button>
-        </div>
-      </div>
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 flex-shrink-0 text-muted-foreground"><path d="m9 18 6-6-6-6"></path></svg>
+      </a>
+      <button type="button" data-mobile-logout class="inline-flex w-full items-center justify-center gap-2 whitespace-nowrap rounded-md border border-red-600/20 bg-transparent px-4 py-2 text-sm font-medium text-red-600 shadow-xs transition-all hover:bg-red-50 hover:text-red-700 h-9 mb-6">
+        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 mr-2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" x2="9" y1="12" y2="12"></line></svg>
+        Log Out
+      </button>
     `;
   }
 
@@ -1018,20 +1017,20 @@
           <nav data-mobile-main-nav class="flex min-h-0 flex-1 flex-col overflow-y-auto p-6">
             ${buildMobileAuthSection(basePath)}
             <div class="mb-4 h-px w-full bg-border"></div>
-            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}auctions.html">Shop All</a>
+            <a class="py-4 text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4" href="${basePath}auctions.html">Shop All</a>
             <div class="h-px w-full bg-border"></div>
-            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}collections/last-chance.html">Last Chance</a>
+            <a class="py-4 text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4" href="${basePath}collections/last-chance.html">Last Chance</a>
             <div class="h-px w-full bg-border"></div>
-            <button type="button" data-mobile-categories-trigger class="flex items-center justify-between py-4 text-left text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all">
+            <button type="button" data-mobile-categories-trigger class="flex items-center justify-between py-4 text-left text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4">
               <span>Categories</span>
               <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 transition-transform"><path d="m9 18 6-6-6-6"></path></svg>
             </button>
             <div class="h-px w-full bg-border"></div>
-            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}collections.html">Collections</a>
+            <a class="py-4 text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4" href="${basePath}collections.html">Collections</a>
             <div class="h-px w-full bg-border"></div>
-            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}about.html">About</a>
+            <a class="py-4 text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4" href="${basePath}about.html">About</a>
             <div class="h-px w-full bg-border"></div>
-            <a class="py-4 text-lg font-medium hover:text-foreground hover:underline underline-offset-4 transition-all" href="${basePath}contact.html">Contact</a>
+            <a class="py-4 text-lg font-medium transition-all hover:text-foreground hover:underline underline-offset-4" href="${basePath}contact.html">Contact</a>
           </nav>
           ${buildMobileCategories(basePath)}
           <button type="button" data-mobile-menu-close class="absolute right-4 top-4 rounded-xs opacity-70 transition-opacity hover:opacity-100">
@@ -1763,26 +1762,43 @@
       languageTrigger.setAttribute("data-state", "open");
     };
 
+    function getMobileRefs() {
+      return {
+        menu: document.querySelector("[data-header-mobile-menu]"),
+        overlay: document.querySelector("[data-header-mobile-overlay]"),
+        mainNav: document.querySelector("[data-mobile-main-nav]"),
+        categoriesView: document.querySelector("[data-mobile-categories-view]"),
+      };
+    }
+
     const closeMobileMenu = function () {
-      if (!mobileMenu || !mobileOverlay) return;
-      mobileMenu.classList.add("hidden");
-      mobileOverlay.classList.add("hidden");
+      const refs = getMobileRefs();
+      if (!refs.menu || !refs.overlay) return;
+      refs.menu.classList.add("hidden");
+      refs.overlay.classList.add("hidden");
       document.body.style.removeProperty("overflow");
+      document.documentElement.style.removeProperty("overflow");
     };
 
     const openMobileMenu = function () {
-      if (!mobileMenu || !mobileOverlay) return;
+      let refs = getMobileRefs();
+      if (!refs.menu || !refs.overlay) {
+        ensureMobileMenu(basePath);
+        refs = getMobileRefs();
+      }
+      if (!refs.menu || !refs.overlay) return;
       closeLanguageMenu();
       closeSearch();
       closeAuthMenu();
-      if (mobileMainNav && mobileCategoriesView) {
-        mobileMainNav.classList.remove("hidden");
-        mobileCategoriesView.classList.add("hidden");
-        mobileCategoriesView.classList.remove("flex");
+      if (refs.mainNav && refs.categoriesView) {
+        refs.mainNav.classList.remove("hidden");
+        refs.categoriesView.classList.add("hidden");
+        refs.categoriesView.classList.remove("flex");
       }
-      mobileMenu.classList.remove("hidden");
-      mobileOverlay.classList.remove("hidden");
+      refs.menu.classList.remove("hidden");
+      refs.overlay.classList.remove("hidden");
       document.body.style.overflow = "hidden";
+      document.documentElement.style.overflow = "hidden";
     };
 
     const closeAuthMenu = function () {

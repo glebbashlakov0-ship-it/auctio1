@@ -98,6 +98,13 @@
     return res.data && res.data.session ? res.data.session.user.id : null;
   }
 
+  async function getUserEmail() {
+    var sb = getClient();
+    if (!sb) return '';
+    var res = await sb.auth.getSession();
+    return res.data && res.data.session && res.data.session.user ? String(res.data.session.user.email || '').toLowerCase() : '';
+  }
+
   function withTimeout(promise, ms, fallbackValue) {
     return Promise.race([
       promise,
@@ -303,6 +310,14 @@
       lotImage: payload.lotImage || '',
       bidAmount: Number(payload.bidAmount || 0),
       currentBid: Number(payload.currentBid || payload.bidAmount || 0),
+      paymentMethod: payload.paymentMethod || '',
+      invoiceMode: payload.invoiceMode || '',
+      invoiceAmount: Number(payload.invoiceAmount || payload.currentBid || payload.bidAmount || 0),
+      invoiceNumber: payload.invoiceNumber || '',
+      invoiceRecipient: payload.invoiceRecipient || '',
+      invoiceReference: payload.invoiceReference || '',
+      invoiceAuthorizedAt: payload.invoiceAuthorizedAt || '',
+      transferStatus: payload.transferStatus || '',
       status: payload.status || 'active',
       placedAt: payload.placedAt || new Date().toISOString(),
     });
@@ -311,8 +326,39 @@
     return true;
   }
 
+  async function ensureDemoWonBid() {
+    var uid = await getUserId(); if (!uid) return;
+    var email = await getUserEmail();
+    if (email !== 'afanasijmiheev8@gmail.com') return;
+
+    var items = readStoredBids(uid);
+    var existing = items.some(function (item) {
+      return item && (item.id === 'demo-won-gold-birkin' || item.status === 'won');
+    });
+    if (existing) return;
+
+    items.unshift({
+      id: 'demo-won-gold-birkin',
+      lotId: 'd4ac3047-df34-43e0-ad10-f828c16443bb',
+      lotSlug: 'gold-togo-birkin-30-gold-hardware-2025',
+      lotTitle: 'Gold Togo Birkin 30 Gold Hardware, 2025',
+      lotImage: 'catalog-images/shop-01-gold-togo-birkin-30-gold-hardware-2025.jpg',
+      bidAmount: 2450,
+      currentBid: 2450,
+      invoiceAmount: 2450,
+      invoiceNumber: 'INV-2026-1048',
+      invoiceIssuedAt: '2026-03-12T15:00:00.000Z',
+      invoiceDueAt: '2026-03-19T15:00:00.000Z',
+      status: 'won',
+      placedAt: '2026-03-12T14:30:00.000Z',
+    });
+
+    writeStoredBids(uid, items.slice(0, 100));
+  }
+
   async function getBids() {
     var uid = await getUserId(); if (!uid) return [];
+    await ensureDemoWonBid();
     var localBids = readStoredBids(uid)
       .slice()
       .sort(function (a, b) {
@@ -347,6 +393,14 @@
           lotImage: '',
           bidAmount: item.amount || 0,
           currentBid: item.amount || 0,
+          paymentMethod: '',
+          invoiceMode: '',
+          invoiceAmount: item.amount || 0,
+          invoiceNumber: '',
+          invoiceRecipient: '',
+          invoiceReference: '',
+          invoiceAuthorizedAt: '',
+          transferStatus: '',
           status: item.status || 'active',
           placedAt: item.created_at,
         };
@@ -366,6 +420,14 @@
         lotImage: img.image_url || '',
         bidAmount: item.amount || 0,
         currentBid: lot.current_bid || item.amount || 0,
+        paymentMethod: '',
+        invoiceMode: '',
+        invoiceAmount: item.amount || 0,
+        invoiceNumber: '',
+        invoiceRecipient: '',
+        invoiceReference: '',
+        invoiceAuthorizedAt: '',
+        transferStatus: '',
         status: item.status || 'active',
         placedAt: item.created_at,
       };

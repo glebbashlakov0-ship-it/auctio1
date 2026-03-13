@@ -280,12 +280,18 @@
     }).slice(0, limit);
   }
 
+  function filterActiveItems(items) {
+    return (Array.isArray(items) ? items : []).filter(function (item) {
+      return getStatus(item) !== "closed";
+    });
+  }
+
   function pickLandingSectionItems(items, headingText) {
     var normalizedHeading = headingText.toLowerCase();
 
     if (normalizedHeading === "watches") {
       return takeUnique(
-        items.filter(function (item) {
+        filterActiveItems(items).filter(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return haystack.includes("watch") || item.category === "Watches";
         }),
@@ -295,7 +301,7 @@
 
     if (normalizedHeading === "handbag") {
       return takeUnique(
-        items.filter(function (item) {
+        filterActiveItems(items).filter(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return (
             haystack.includes("bag") ||
@@ -315,7 +321,7 @@
 
     if (normalizedHeading === "earring") {
       return takeUnique(
-        items.filter(function (item) {
+        filterActiveItems(items).filter(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return haystack.includes("earring") || haystack.includes("earclip") || item.category === "Earring";
         }),
@@ -325,7 +331,7 @@
 
     if (normalizedHeading === "books & manuscripts") {
       return takeUnique(
-        items.filter(function (item) {
+        filterActiveItems(items).filter(function (item) {
           return item.category === "Books & Manuscripts";
         }),
         10
@@ -334,7 +340,7 @@
 
     if (normalizedHeading === "collectible") {
       return takeUnique(
-        items.filter(function (item) {
+        filterActiveItems(items).filter(function (item) {
           return item.category === "Collectible";
         }),
         10

@@ -40,12 +40,6 @@
     const root = document.querySelector("[data-auth-root]");
     if (!root) return;
     root.innerHTML = `
-      <section class="border-b border-border/40 bg-secondary/20">
-        <div class="container mx-auto px-4 lg:px-8 py-16">
-          <h1 class="font-serif text-4xl md:text-5xl mb-4 text-balance">${title}</h1>
-          <p class="text-lg text-muted-foreground max-w-2xl text-pretty">${subtitle}</p>
-        </div>
-      </section>
       <section class="py-10 lg:py-16">
         <div class="container mx-auto px-4 lg:px-8">
           ${content}
@@ -803,6 +797,94 @@
       return Math.floor(diff / 86400) + "d ago";
     }
 
+    function formatDate(iso) {
+      if (!iso) return "—";
+      return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    }
+
+    function buildWonInvoiceBlock(item) {
+      if (!item || item.status !== "won") return "";
+      var invoiceNumber = item.invoiceNumber || "INV-2026-1048";
+      var issuedAt = item.invoiceIssuedAt || item.placedAt;
+      var dueAt = item.invoiceDueAt || item.placedAt;
+      var amountDue = Number(item.invoiceAmount || item.currentBid || item.bidAmount || 0);
+      return `
+        <details class="mt-3 rounded-lg border border-blue-200 bg-blue-50/70">
+          <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-blue-900">
+            <span>Payment by invoice</span>
+            <span class="text-xs text-blue-700">View details</span>
+          </summary>
+          <div class="space-y-3 border-t border-blue-200 px-3 py-3">
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p class="text-blue-700/80">Invoice</p>
+                <p class="font-semibold text-blue-950">${escapeHtml(invoiceNumber)}</p>
+              </div>
+              <div>
+                <p class="text-blue-700/80">Amount due</p>
+                <p class="font-semibold text-blue-950">${formatCurrency(amountDue)}</p>
+              </div>
+              <div>
+                <p class="text-blue-700/80">Issued</p>
+                <p class="font-semibold text-blue-950">${formatDate(issuedAt)}</p>
+              </div>
+              <div>
+                <p class="text-blue-700/80">Due date</p>
+                <p class="font-semibold text-blue-950">${formatDate(dueAt)}</p>
+              </div>
+            </div>
+            <div class="rounded-md bg-white/80 p-3 text-xs text-blue-950">
+              <p class="font-semibold mb-1">Bank transfer / invoice payment</p>
+              <p class="text-blue-800">Use the invoice number as payment reference. Settlement is made by bank transfer after the auction win, not by card.</p>
+            </div>
+          </div>
+        </details>`;
+    }
+
+    function buildBidInvoiceCommitmentBlock(item) {
+      if (!item || item.status !== "active" || item.paymentMethod !== "invoice") return "";
+      var amount = Number(item.invoiceAmount || item.bidAmount || item.currentBid || 0);
+      var recipient = item.invoiceRecipient || "Verified bidder";
+      var reference = item.invoiceReference || "On file";
+      var invoiceNumber = item.invoiceNumber || "PFI-00000000";
+      var transferStatus = item.transferStatus || "pending_verification";
+      return `
+        <details class="mt-3 rounded-lg border border-amber-200 bg-amber-50/80">
+          <summary class="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-amber-950">
+            <span>Bank transfer submitted</span>
+            <span class="text-xs text-amber-700">${escapeHtml(transferStatus.replace(/_/g, " "))}</span>
+          </summary>
+          <div class="space-y-3 border-t border-amber-200 px-3 py-3">
+            <div class="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <p class="text-amber-700/80">Invoice</p>
+                <p class="font-semibold text-amber-950">${escapeHtml(invoiceNumber)}</p>
+              </div>
+              <div>
+                <p class="text-amber-700/80">Transfer amount</p>
+                <p class="font-semibold text-amber-950">${formatCurrency(amount)}</p>
+              </div>
+              <div>
+                <p class="text-amber-700/80">Sender</p>
+                <p class="font-semibold text-amber-950">${escapeHtml(recipient)}</p>
+              </div>
+              <div>
+                <p class="text-amber-700/80">Reference</p>
+                <p class="font-semibold text-amber-950">${escapeHtml(reference)}</p>
+              </div>
+              <div>
+                <p class="text-amber-700/80">Authorized</p>
+                <p class="font-semibold text-amber-950">${formatDate(item.invoiceAuthorizedAt || item.placedAt)}</p>
+              </div>
+            </div>
+            <div class="rounded-md bg-white/80 p-3 text-xs text-amber-950">
+              <p class="font-semibold mb-1">Bank details used for payment</p>
+              <p class="text-amber-900">Beneficiary: Auctio Holdings Ltd. IBAN: DE89 3704 0044 0532 0130 00. SWIFT/BIC: DEUTDEBBXXX.</p>
+            </div>
+          </div>
+        </details>`;
+    }
+
     function buildLotCard(item, actions) {
       var img = item.lotImage
         ? `<img src="${escapeHtml(item.lotImage)}" alt="${escapeHtml(item.lotTitle)}" class="w-full h-full object-cover">`
@@ -873,7 +955,9 @@
                     <span class="text-xs font-medium">Your bid: ${formatCurrency(item.bidAmount)}</span>
                     <span class="text-xs px-2 py-0.5 rounded-full ${badge}">${escapeHtml(item.status)}</span>
                   </div>
-                  <p class="text-xs text-muted-foreground">${timeAgo(item.placedAt)}</p>`);
+                  <p class="text-xs text-muted-foreground">${timeAgo(item.placedAt)}</p>
+                  ${buildBidInvoiceCommitmentBlock(item)}
+                  ${buildWonInvoiceBlock(item)}`);
               }).join("")}
             </div>
           </div>
