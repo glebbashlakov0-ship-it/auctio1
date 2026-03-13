@@ -309,15 +309,18 @@
     const errorNode = document.querySelector("[data-auth-error]");
     const passwordInput = document.querySelector("#password");
     const passwordToggle = document.querySelector("[data-password-toggle]");
+    let isSubmitting = false;
     if (!form || !errorNode || !passwordInput) return;
 
     bindPasswordToggle(passwordToggle, passwordInput);
 
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
+      if (isSubmitting) return;
       errorNode.classList.add("hidden");
       const submitBtn = form.querySelector("[type=submit]");
       setAuthSubmitState(submitBtn, true, "Sign In", "Signing In...");
+      isSubmitting = true;
       const formData = new FormData(form);
       try {
         await window.AuctioAuth.login(formData.get("email"), formData.get("password"));
@@ -326,6 +329,8 @@
         errorNode.textContent = error.message || "Unable to log in.";
         errorNode.classList.remove("hidden");
         setAuthSubmitState(submitBtn, false, "Sign In", "Signing In...");
+      } finally {
+        isSubmitting = false;
       }
     });
   }
@@ -344,6 +349,7 @@
     const errorNode = document.querySelector("[data-auth-error]");
     const passwordInput = document.querySelector("#password");
     const confirmPasswordInput = document.querySelector("#confirmPassword");
+    let isSubmitting = false;
     if (!form || !errorNode || !passwordInput || !confirmPasswordInput) return;
 
     bindPasswordToggle(document.querySelector('[data-password-toggle="password"]'), passwordInput);
@@ -351,6 +357,7 @@
 
     form.addEventListener("submit", async function (event) {
       event.preventDefault();
+      if (isSubmitting) return;
       errorNode.classList.add("hidden");
       const submitBtn = form.querySelector("[type=submit]");
       const formData = new FormData(form);
@@ -368,6 +375,7 @@
       }
 
       setAuthSubmitState(submitBtn, true, "Create Account", "Creating Account...");
+      isSubmitting = true;
       try {
         await window.AuctioAuth.register({
           firstName: formData.get("firstName"),
@@ -388,6 +396,8 @@
         }
         errorNode.textContent = error.message || "Unable to create account.";
         errorNode.classList.remove("hidden");
+      } finally {
+        isSubmitting = false;
       }
     });
   }

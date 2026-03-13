@@ -124,17 +124,27 @@
     var user = session && session.user;
     var stored = readStoredProfile(uid);
     var meta = (user && user.user_metadata) || {};
+    var remoteProfile = null;
+    try {
+      var profileRes = await withTimeout(
+        sb.from('profiles').select('id, email, first_name, last_name, phone, country, address, city, state, postal_code, created_at').eq('id', uid).maybeSingle(),
+        2000,
+        { data: null, error: new Error('timeout') }
+      );
+      if (!profileRes.error && profileRes.data) remoteProfile = profileRes.data;
+    } catch (_error) {}
     return {
       id: uid,
-      email: (user && user.email) || '',
-      first_name: meta.first_name || meta.firstName || '',
-      last_name: meta.last_name || meta.lastName || '',
-      phone: meta.phone || '',
-      country: stored.country || '',
-      address: stored.street || '',
-      city: stored.city || '',
-      state: stored.state || '',
-      postal_code: stored.zip || ''
+      email: (remoteProfile && remoteProfile.email) || (user && user.email) || '',
+      first_name: (remoteProfile && remoteProfile.first_name) || meta.first_name || meta.firstName || '',
+      last_name: (remoteProfile && remoteProfile.last_name) || meta.last_name || meta.lastName || '',
+      phone: (remoteProfile && remoteProfile.phone) || meta.phone || '',
+      country: (remoteProfile && remoteProfile.country) || stored.country || '',
+      address: (remoteProfile && remoteProfile.address) || stored.street || '',
+      city: (remoteProfile && remoteProfile.city) || stored.city || '',
+      state: (remoteProfile && remoteProfile.state) || stored.state || '',
+      postal_code: (remoteProfile && remoteProfile.postal_code) || stored.zip || '',
+      created_at: (remoteProfile && remoteProfile.created_at) || (user && user.created_at) || ''
     };
   }
 
@@ -166,6 +176,21 @@
       zip: data.postalCode !== undefined ? data.postalCode : stored.zip || ''
     };
     writeStoredProfile(uid, nextStored);
+
+    try {
+      await sb.from('profiles').upsert({
+        id: uid,
+        email: session.user.email || '',
+        first_name: data.firstName !== undefined ? data.firstName : ((session.user.user_metadata && (session.user.user_metadata.first_name || session.user.user_metadata.firstName)) || ''),
+        last_name: data.lastName !== undefined ? data.lastName : ((session.user.user_metadata && (session.user.user_metadata.last_name || session.user.user_metadata.lastName)) || ''),
+        phone: data.phone !== undefined ? data.phone : ((session.user.user_metadata && session.user.user_metadata.phone) || ''),
+        country: nextStored.country || '',
+        address: nextStored.street || '',
+        city: nextStored.city || '',
+        state: nextStored.state || '',
+        postal_code: nextStored.zip || ''
+      }, { onConflict: 'id' });
+    } catch (_error) {}
 
     // Refresh legacy localStorage
     if (sessionRes.data && sessionRes.data.session) {

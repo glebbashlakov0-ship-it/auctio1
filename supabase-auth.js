@@ -1,10 +1,11 @@
 (function () {
-  var SUPABASE_URL = 'https://pwihhhbomwxzznekueok.supabase.co';
-  var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB3aWhoaGJvbXd4enpuZWt1ZW9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0NTgzNjMsImV4cCI6MjA4MTAzNDM2M30.S1aJOnJIdZY8WGVUUAbvMStxR4C5o2-3AkO6GgmkKYY';
-  var PROJECT_REF = 'pwihhhbomwxzznekueok';
+  var SUPABASE_URL = 'https://njsnxxiybniocteqbndp.supabase.co';
+  var SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qc254eGl5Ym5pb2N0ZXFibmRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNTM5MzYsImV4cCI6MjA4ODkyOTkzNn0.xZhqA4ASoaHZ36mi3ZYXBTgG4Cvq89sVzXptJCs5mU4';
+  var PROJECT_REF = 'njsnxxiybniocteqbndp';
   var SB_SESSION_KEY = 'sb-' + PROJECT_REF + '-auth-token';
   var AUCTIO_USERS_KEY = 'auctio_users';
   var AUCTIO_SESSION_KEY = 'auctio_session';
+  var AUCTIO_AUTH_OUTAGE_KEY = 'auctio_auth_outage_until';
   var LEGACY_AUTH_USERS_KEY = 'auctio-auth-users';
   var LEGACY_AUTH_SESSION_KEY = 'auctio-auth-session';
 
@@ -46,6 +47,29 @@
     } catch (_error) {}
   }
 
+  function getAuthOutageUntil() {
+    try {
+      var value = Number(window.localStorage.getItem(AUCTIO_AUTH_OUTAGE_KEY) || 0);
+      return Number.isFinite(value) ? value : 0;
+    } catch (_error) {
+      return 0;
+    }
+  }
+
+  function markAuthOutage() {
+    try {
+      window.localStorage.setItem(AUCTIO_AUTH_OUTAGE_KEY, String(Date.now() + (10 * 60 * 1000)));
+    } catch (_error) {}
+  }
+
+  function clearAuthOutage() {
+    removeStorage(AUCTIO_AUTH_OUTAGE_KEY);
+  }
+
+  function shouldUseLocalAuthFallback() {
+    return getAuthOutageUntil() > Date.now();
+  }
+
   function pruneAuthCache(activeUserId) {
     try {
       removeStorage(LEGACY_AUTH_USERS_KEY);
@@ -77,9 +101,31 @@
     };
   }
 
+  function isLocalOnlyUserId(userId) {
+    return String(userId || '').indexOf('local-') === 0;
+  }
+
+  function purgeLocalFallbackUsers() {
+    try {
+      var users = readJSON(AUCTIO_USERS_KEY, []);
+      if (Array.isArray(users)) {
+        var nextUsers = users.filter(function (entry) {
+          return entry && !isLocalOnlyUserId(entry.id);
+        });
+        writeJSON(AUCTIO_USERS_KEY, nextUsers);
+      }
+
+      var session = readJSON(AUCTIO_SESSION_KEY, null);
+      if (session && isLocalOnlyUserId(session.userId)) {
+        removeStorage(AUCTIO_SESSION_KEY);
+      }
+    } catch (_error) {}
+  }
+
   function getLegacyCurrentUser() {
     var session = readJSON(AUCTIO_SESSION_KEY, null);
     if (!session || !session.userId) return null;
+    if (isLocalOnlyUserId(session.userId)) return null;
     var users = readJSON(AUCTIO_USERS_KEY, []);
     if (!Array.isArray(users)) return null;
     for (var i = 0; i < users.length; i += 1) {
@@ -101,13 +147,20 @@
     pruneAuthCache(user.id);
     var users = readJSON(AUCTIO_USERS_KEY, []);
     if (!Array.isArray(users)) users = [];
+    var existing = null;
+    for (var i = 0; i < users.length; i += 1) {
+      if (users[i] && users[i].id === user.id) {
+        existing = users[i];
+        break;
+      }
+    }
     var record = {
       id: user.id,
       firstName: user.firstName || '',
       lastName: user.lastName || '',
       email: user.email || '',
       phone: user.phone || '',
-      password: '__supabase__',
+      password: user.password || (existing && existing.password) || '__supabase__',
       createdAt: user.createdAt || ''
     };
     var nextUsers = users.filter(function (entry) { return entry && entry.id !== user.id; });
@@ -122,6 +175,38 @@
   function setCurrentUser(supaUser, profile) {
     currentUser = sanitizeUser(supaUser, profile);
     writeLegacyUser(currentUser);
+    return currentUser;
+  }
+
+  function findLegacyUserByEmail(email) {
+    var normalizedEmail = String(email || '').trim().toLowerCase();
+    var users = readJSON(AUCTIO_USERS_KEY, []);
+    if (!Array.isArray(users)) return null;
+    for (var i = 0; i < users.length; i += 1) {
+      if (
+        users[i] &&
+        !isLocalOnlyUserId(users[i].id) &&
+        String(users[i].email || '').trim().toLowerCase() === normalizedEmail
+      ) {
+        return users[i];
+      }
+    }
+    return null;
+  }
+
+  function setLegacyCurrentUser(user) {
+    if (!user) return null;
+    currentUser = sanitizeUser(user, user);
+    writeLegacyUser({
+      id: user.id,
+      firstName: user.firstName || '',
+      lastName: user.lastName || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      password: user.password || '',
+      createdAt: user.createdAt || ''
+    });
+    dispatchAuth();
     return currentUser;
   }
 
@@ -160,10 +245,30 @@
     }
   }
 
+  async function syncProfileRecord(userId, payload) {
+    if (!userId || !supabase) return;
+    try {
+      await supabase.from('profiles').upsert({
+        id: userId,
+        email: String((payload && payload.email) || '').trim().toLowerCase(),
+        first_name: String((payload && payload.first_name) || '').trim(),
+        last_name: String((payload && payload.last_name) || '').trim(),
+        phone: String((payload && payload.phone) || '').trim()
+      }, { onConflict: 'id' });
+    } catch (_error) {}
+  }
+
   function normalizeError(error, fallbackMessage) {
     var message = String((error && error.message) || fallbackMessage || 'Authentication failed.');
     if (message === 'Invalid login credentials') {
       return new Error('Incorrect email or password.');
+    }
+    if (
+      message.indexOf('User already registered') !== -1 ||
+      message.indexOf('user already registered') !== -1 ||
+      message.indexOf('already been registered') !== -1
+    ) {
+      return new Error('An account with this email already exists. Try signing in.');
     }
     if (message.indexOf('Gateway Timeout') !== -1 || message.indexOf('504') !== -1) {
       return new Error('Authentication service is temporarily unavailable. Please try again.');
@@ -195,6 +300,7 @@
         return await fn();
       } catch (error) {
         lastError = normalizeError(error, fallbackMessage);
+        if (shouldRetryAuth(lastError)) markAuthOutage();
         if (attempt === 0 && shouldRetryAuth(lastError)) {
           await wait(1200);
           continue;
@@ -203,6 +309,35 @@
       }
     }
     throw lastError || new Error(fallbackMessage || 'Authentication failed.');
+  }
+
+  async function recoverRegistrationAfterTimeout(email, password) {
+    try {
+      var signInResult = await supabase.auth.signInWithPassword({
+        email: String(email || '').trim().toLowerCase(),
+        password: String(password || '')
+      });
+      if (signInResult.error || !signInResult.data || !signInResult.data.user) return null;
+      setCurrentUser(signInResult.data.user);
+      dispatchAuth();
+      return window.AuctioAuth.getCurrentUser();
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function recoverLoginAfterTimeout() {
+    try {
+      await wait(900);
+      var sessionResult = await supabase.auth.getSession();
+      var session = sessionResult.data && sessionResult.data.session;
+      if (!session || !session.user) return null;
+      setCurrentUser(session.user);
+      dispatchAuth();
+      return window.AuctioAuth.getCurrentUser();
+    } catch (_error) {
+      return null;
+    }
   }
 
   function overrideAuth() {
@@ -224,22 +359,40 @@
       var password = String(payload.password || '');
       if (!email) throw new Error('Email is required.');
       if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+      if (shouldUseLocalAuthFallback()) {
+        throw new Error('Supabase authentication is temporarily unavailable. Registration is disabled until the service recovers.');
+      }
 
-      var result = await retryAuthCall(async function () {
-        var signUpResult = await supabase.auth.signUp({
-          email: email,
-          password: password,
-          options: {
-            data: {
-              first_name: String(payload.firstName || '').trim(),
-              last_name: String(payload.lastName || '').trim(),
-              phone: String(payload.phone || '').trim()
+      var result;
+      try {
+        result = await retryAuthCall(async function () {
+          var signUpResult = await supabase.auth.signUp({
+            email: email,
+            password: password,
+            options: {
+              data: {
+                first_name: String(payload.firstName || '').trim(),
+                last_name: String(payload.lastName || '').trim(),
+                phone: String(payload.phone || '').trim()
+              }
             }
-          }
-        });
-        if (signUpResult.error) throw signUpResult.error;
-        return signUpResult;
-      }, 'Unable to create account.');
+          });
+          if (signUpResult.error) throw signUpResult.error;
+          clearAuthOutage();
+          return signUpResult;
+        }, 'Unable to create account.');
+      } catch (error) {
+        var normalized = normalizeError(error, 'Unable to create account.');
+        if (
+          String(normalized.message || '').indexOf('temporarily unavailable') !== -1 ||
+          String(normalized.message || '').indexOf('Network error') !== -1
+        ) {
+          var recoveredUser = await recoverRegistrationAfterTimeout(email, password);
+          if (recoveredUser) return recoveredUser;
+          throw new Error('Supabase authentication is temporarily unavailable. Registration could not be completed.');
+        }
+        throw normalized;
+      }
 
       if (!result.data || !result.data.user) throw new Error('Registration failed. Please try again.');
 
@@ -254,24 +407,55 @@
         phone: String(payload.phone || '').trim(),
         email: email
       });
+      await syncProfileRecord(result.data.user.id, {
+        email: email,
+        first_name: String(payload.firstName || '').trim(),
+        last_name: String(payload.lastName || '').trim(),
+        phone: String(payload.phone || '').trim()
+      });
       dispatchAuth();
 
       return window.AuctioAuth.getCurrentUser();
     };
 
     window.AuctioAuth.login = async function (email, password) {
-      var result = await retryAuthCall(async function () {
-        var signInResult = await supabase.auth.signInWithPassword({
-          email: String(email || '').trim().toLowerCase(),
-          password: String(password || '')
-        });
-        if (signInResult.error) throw signInResult.error;
-        return signInResult;
-      }, 'Unable to log in.');
+      if (shouldUseLocalAuthFallback()) {
+        throw new Error('Supabase authentication is temporarily unavailable. Please try signing in again later.');
+      }
+
+      var result;
+      try {
+        result = await retryAuthCall(async function () {
+          var signInResult = await supabase.auth.signInWithPassword({
+            email: String(email || '').trim().toLowerCase(),
+            password: String(password || '')
+          });
+          if (signInResult.error) throw signInResult.error;
+          clearAuthOutage();
+          return signInResult;
+        }, 'Unable to log in.');
+      } catch (error) {
+        var normalized = normalizeError(error, 'Unable to log in.');
+        if (
+          String(normalized.message || '').indexOf('temporarily unavailable') !== -1 ||
+          String(normalized.message || '').indexOf('Network error') !== -1
+        ) {
+          var recoveredSessionUser = await recoverLoginAfterTimeout();
+          if (recoveredSessionUser) return recoveredSessionUser;
+          throw new Error('Supabase authentication is temporarily unavailable. Login could not be completed.');
+        }
+        throw normalized;
+      }
 
       if (!result.data || !result.data.user) throw new Error('Unable to log in.');
 
       setCurrentUser(result.data.user);
+      await syncProfileRecord(result.data.user.id, {
+        email: result.data.user.email || '',
+        first_name: (result.data.user.user_metadata && (result.data.user.user_metadata.first_name || result.data.user.user_metadata.firstName)) || '',
+        last_name: (result.data.user.user_metadata && (result.data.user.user_metadata.last_name || result.data.user.user_metadata.lastName)) || '',
+        phone: (result.data.user.user_metadata && result.data.user.user_metadata.phone) || ''
+      });
       dispatchAuth();
 
       return window.AuctioAuth.getCurrentUser();
@@ -292,6 +476,7 @@
     if (bootstrapStarted) return;
     bootstrapStarted = true;
     currentUser = getLegacyCurrentUser();
+    purgeLocalFallbackUsers();
     overrideAuth();
     refreshCurrentUserFromSession();
 
