@@ -2,6 +2,8 @@
   var BASE_PATH = "../";
   var SUPABASE_URL = "https://njsnxxiybniocteqbndp.supabase.co";
   var SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5qc254eGl5Ym5pb2N0ZXFibmRwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMzNTM5MzYsImV4cCI6MjA4ODkyOTkzNn0.xZhqA4ASoaHZ36mi3ZYXBTgG4Cvq89sVzXptJCs5mU4";
+  var REMOTE_GALLERY_SUPABASE_URL = "https://pwihhhbomwxzznekueok.supabase.co";
+  var REMOTE_GALLERY_SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB3aWhoaGJvbXd4enpuZWt1ZW9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0NTgzNjMsImV4cCI6MjA4MTAzNDM2M30.S1aJOnJIdZY8WGVUUAbvMStxR4C5o2-3AkO6GgmkKYY";
 
   function loadJson(path) {
     return fetch(path, { cache: "no-store" }).then(function (response) {
@@ -33,6 +35,19 @@
     });
   }
 
+  function requestRemoteGallerySupabase(path) {
+    return fetch(REMOTE_GALLERY_SUPABASE_URL + path, {
+      headers: {
+        apikey: REMOTE_GALLERY_SUPABASE_KEY,
+        Authorization: "Bearer " + REMOTE_GALLERY_SUPABASE_KEY,
+      },
+      cache: "no-store",
+    }).then(function (response) {
+      if (!response.ok) throw new Error("Failed to load remote gallery " + path);
+      return response.json();
+    });
+  }
+
   function escapeHtml(value) {
     return String(value == null ? "" : value)
       .replaceAll("&", "&amp;")
@@ -52,6 +67,20 @@
       .replace(/<script[\s\S]*?<\/script>/gi, "")
       .replace(/\son\w+="[^"]*"/gi, "")
       .replace(/\son\w+='[^']*'/gi, "");
+  }
+
+  function sanitizeProductHtml(value) {
+    return renderRichText(value || "")
+      .replace(/<h3>\s*Condition\s*<\/h3>/gi, "")
+      .replace(/<p><strong>Guarantee:<\/strong>[\s\S]*?<\/p>/gi, "")
+      .replace(/<a\b[^>]*>/gi, "")
+      .replace(/<\/a>/gi, "")
+      .replace(/<ul(?![^>]*class=)/gi, '<ul class="list-disc pl-5 space-y-1"')
+      .replace(/<li(?![^>]*class=)/gi, '<li class="ml-0"');
+  }
+
+  function stripGuaranteeHtml(value) {
+    return String(value || "").replace(/<p><strong>Guarantee:<\/strong>[\s\S]*?<\/p>/gi, "");
   }
 
   function getQueryParam(name) {
@@ -195,6 +224,35 @@
     };
   }
 
+  function fetchRemoteLotData(slug, language) {
+    if (!slug) return Promise.resolve([]);
+    var select = encodeURIComponent("id,slug,title,description,condition,shipping_info,artist_maker,current_bid,starting_bid,estimated_value_min,estimated_value_max,minimum_increment,start_time,end_time,status,year,dimensions,materials,lot_number,category_id,extra,lot_images(*),categories(name,slug),lot_translations(*)");
+    var filter = encodeURIComponent("eq." + slug);
+    return requestRemoteGallerySupabase("/rest/v1/lots?select=" + select + "&slug=" + filter + "&limit=1")
+      .then(function (rows) {
+        var row = rows && rows[0];
+        if (!row) return null;
+        var normalized = normalizeLotTranslation(row, language);
+        normalized.lot_images = (normalized.lot_images || [])
+          .filter(function (image) { return image && image.image_url; })
+          .sort(function (a, b) { return Number(a.order_position || 0) - Number(b.order_position || 0); });
+        return normalized;
+      })
+      .catch(function () {
+        return null;
+      });
+  }
+
+  function hydrateLotFromRemote(bundle, language) {
+    if (!bundle || !bundle.lot) return Promise.resolve(bundle);
+    return fetchRemoteLotData(bundle.rawLot && bundle.rawLot.slug || bundle.lot.slug, language).then(function (remoteLot) {
+      if (!remoteLot) return bundle;
+      bundle.rawLot = Object.assign({}, bundle.rawLot || {}, remoteLot.raw || remoteLot);
+      bundle.lot = Object.assign({}, bundle.lot, remoteLot);
+      return bundle;
+    });
+  }
+
   function slugToLabel(slug) {
     return String(slug || "")
       .replace(/[-_]+/g, " ")
@@ -252,7 +310,7 @@
   }
 
   function buildFallbackRelatedLots(rawLot, items, language) {
-    return (items || [])
+    var related = (items || [])
       .filter(function (entry) {
         if (!entry || entry.slug === rawLot.slug) return false;
         if (entry.category && rawLot.categories && entry.category === rawLot.categories.name) return true;
@@ -262,30 +320,32 @@
       .map(function (entry) {
         return normalizeLotTranslation(normalizeFallbackLot(entry), language);
       });
+
+    while (related.length && related.length < 8) {
+      related = related.concat(related.slice(0, 8 - related.length));
+    }
+
+    return related.slice(0, 12);
   }
 
   function loadLotBundle(slug, language) {
-    return loadLotFromFallback(slug, language).then(function (bundle) {
-      if (bundle && bundle.rawLot && bundle.lot) {
-        return bundle;
-      }
-
-      var lotSelect = encodeURIComponent("*,lot_images(*),categories(name,slug),lot_translations(*)");
-      var lotFilter = encodeURIComponent("eq." + slug);
-      return requestSupabase("/rest/v1/lots?select=" + lotSelect + "&slug=" + lotFilter + "&limit=1")
-        .then(function (lots) {
-          var rawLot = lots && lots[0];
-          if (!rawLot) return null;
+    var lotSelect = encodeURIComponent("*,lot_images(*),categories(name,slug),lot_translations(*)");
+    var lotFilter = encodeURIComponent("eq." + slug);
+    return requestSupabase("/rest/v1/lots?select=" + lotSelect + "&slug=" + lotFilter + "&limit=1")
+      .then(function (lots) {
+        var rawLot = lots && lots[0];
+        if (rawLot) {
           return {
             rawLot: rawLot,
             lot: normalizeLotTranslation(rawLot, language),
             fallbackItems: null,
           };
-        })
-        .catch(function () {
-          return null;
-        });
-    });
+        }
+        return loadLotFromFallback(slug, language);
+      })
+      .catch(function () {
+        return loadLotFromFallback(slug, language);
+      });
   }
 
   function loadRelatedAndBids(rawLot, language, fallbackItems) {
@@ -459,18 +519,25 @@
     var bid = item.current_bid || item.starting_bid || 0;
     var image = getPrimaryImage(item.lot_images || []);
     var category = (item.categories && item.categories.name) || "General";
-    var isEnded = String(item.status || "").toLowerCase() === "closed" || new Date(item.end_time).getTime() <= Date.now();
+    var parts = getCountdownParts(item.end_time);
+    var isEnded = String(item.status || "").toLowerCase() === "closed" || parts.ended;
     var badgeText = isEnded ? strings.bid.auctionEnded : getCountdown(item.end_time);
+    var inlineCountdown = isEnded
+      ? '<div class="flex items-center gap-0.5 sm:gap-1 tabular-nums"><span class="font-semibold">' + escapeHtml(strings.bid.auctionEnded) + '</span></div>'
+      : '<div class="flex items-center gap-0.5 sm:gap-1 tabular-nums" data-countdown="' + escapeHtml(item.end_time) + '"><span class="font-semibold" data-countdown-days>' + escapeHtml(parts.days) + '</span><span class="text-muted-foreground text-[8px] sm:text-[9px]">d</span><span class="font-semibold" data-countdown-hours>' + escapeHtml(parts.hours) + '</span><span class="text-muted-foreground">:</span><span class="font-semibold" data-countdown-minutes>' + escapeHtml(parts.minutes) + '</span><span class="text-muted-foreground">:</span><span class="font-semibold" data-countdown-seconds>' + escapeHtml(parts.seconds) + '</span></div>';
     return (
-      '<a href="' + buildLotHref(item) + '" class="block shrink-0 min-w-[240px] w-[240px] md:min-w-[260px] md:w-[260px] snap-start h-full"><div class="border border-border/50 bg-background rounded-lg overflow-hidden h-full flex flex-col group hover:border-foreground/30 transition-colors">' +
+      '<div class="w-[280px] flex-shrink-0"><a class="block h-full" href="' + buildLotHref(item) + '">' +
+      '<div data-slot="card" class="text-card-foreground gap-6 rounded-xl border shadow-sm group overflow-hidden border-border/30 hover:border-border transition-all duration-300 bg-background cursor-pointer h-full flex flex-col p-0">' +
       '<div class="relative aspect-square overflow-hidden bg-muted/20 rounded-t-lg">' +
-      '<img src="' + escapeHtml(image) + '" alt="' + escapeHtml(title) + '" class="w-full h-full object-cover pointer-events-none select-none" draggable="false"/>' +
-      '<div class="absolute top-1 right-1 bg-background/95 backdrop-blur-sm rounded-full px-1 py-0.5 flex items-center gap-0.5"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-2.5 w-2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="text-[9px] font-medium">' + escapeHtml(badgeText) + '</span></div></div>' +
-      '<div class="p-2 space-y-1.5 flex-1 flex flex-col">' +
-      '<span class="text-[9px] uppercase tracking-wider bg-muted/50 border border-border/50 px-1 py-0.5 w-fit rounded">' + escapeHtml(category) + "</span>" +
-      '<h3 class="font-serif text-xs leading-tight line-clamp-2 min-h-[32px]">' + escapeHtml(title) + '</h3>' +
-      '<div class="flex items-center gap-1 py-1 px-1.5 bg-muted/30 rounded text-[10px] font-medium"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 text-primary"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="font-semibold">' + escapeHtml(badgeText) + '</span></div>' +
-      '<div><p class="text-[9px] text-muted-foreground uppercase tracking-wider">' + escapeHtml(strings.productPage.currentBid) + '</p><p class="text-sm font-semibold tabular-nums">' + formatCurrency(bid) + '</p></div><span class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-[10px] font-medium transition-all border bg-transparent h-7 mt-auto w-full hover:bg-foreground hover:text-background">View Auction</span></div></div></a>'
+      '<img alt="' + escapeHtml(title) + '" class="w-full h-full object-cover pointer-events-none select-none" draggable="false" src="' + escapeHtml(image) + '">' +
+      '<div class="absolute top-1 right-1 bg-background/95 backdrop-blur-sm rounded-full px-1 py-0.5 flex items-center gap-0.5"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock h-2 w-2 sm:h-2.5 sm:w-2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="text-[8px] sm:text-[9px] font-medium">' + escapeHtml(badgeText) + '</span></div></div>' +
+      '<div data-slot="card-content" class="p-1.5 sm:p-2 space-y-1 sm:space-y-1.5 flex-1 flex flex-col">' +
+      '<span data-slot="badge" class="inline-flex items-center justify-center rounded-md border font-medium whitespace-nowrap shrink-0 [&amp;&gt;svg]:size-3 gap-1 [&amp;&gt;svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden text-secondary-foreground [a&amp;]:hover:bg-secondary/90 text-[8px] sm:text-[9px] uppercase tracking-wider bg-muted/50 border-border/50 px-1 py-0.5 w-fit">' + escapeHtml(category) + '</span>' +
+      '<h3 class="font-serif text-[10px] sm:text-xs leading-tight line-clamp-2 h-[28px] sm:h-[32px]">' + escapeHtml(title) + '</h3>' +
+      '<div class="flex items-center gap-0.5 sm:gap-1 py-0.5 sm:py-1 px-1 sm:px-1.5 bg-muted/30 rounded text-[9px] sm:text-[10px] font-medium"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' + inlineCountdown + '</div>' +
+      '<div><p class="text-[8px] sm:text-[9px] text-muted-foreground uppercase tracking-wider">' + escapeHtml(strings.productPage.currentBid) + '</p><p class="text-xs sm:text-sm font-semibold tabular-nums">' + formatCurrency(bid) + '</p></div>' +
+      '<button data-slot="button" class="inline-flex items-center justify-center whitespace-nowrap font-medium disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border shadow-xs dark:bg-input/30 dark:border-input dark:hover:bg-input/50 rounded-md gap-1.5 px-3 has-[&gt;svg]:px-2.5 w-full hover:bg-foreground hover:text-background transition-colors bg-transparent text-[9px] sm:text-[10px] h-6 sm:h-7 mt-auto">View Auction</button>' +
+      '</div></div></a></div>'
     );
   }
 
@@ -562,6 +629,165 @@
     }).join("");
   }
 
+  function formatAbsoluteDate(value) {
+    if (!value) return "";
+    return new Date(value).toLocaleString("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+  }
+
+  function getCountdownParts(endTime) {
+    var diff = new Date(endTime).getTime() - Date.now();
+    if (!Number.isFinite(diff) || diff <= 0) {
+      return { ended: true, days: "0", hours: "00", minutes: "00", seconds: "00" };
+    }
+
+    var totalSeconds = Math.floor(diff / 1000);
+    var days = Math.floor(totalSeconds / 86400);
+    var hours = Math.floor((totalSeconds % 86400) / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var seconds = totalSeconds % 60;
+
+    return {
+      ended: false,
+      days: String(days),
+      hours: String(hours).padStart(2, "0"),
+      minutes: String(minutes).padStart(2, "0"),
+      seconds: String(seconds).padStart(2, "0"),
+    };
+  }
+
+  function renderCountdownDisplay(endTime, closedLabel) {
+    var parts = getCountdownParts(endTime);
+    if (parts.ended) {
+      return '<span class="font-medium text-red-600">' + escapeHtml(closedLabel) + "</span>";
+    }
+
+    return (
+      '<div class="flex items-center gap-1 font-mono text-sm" data-countdown="' + escapeHtml(endTime) + '">' +
+      '<span class="font-semibold" data-countdown-days>' + escapeHtml(parts.days) + '</span>' +
+      '<span class="text-muted-foreground">d</span>' +
+      '<span class="font-semibold" data-countdown-hours>' + escapeHtml(parts.hours) + '</span>' +
+      '<span class="text-muted-foreground">:</span>' +
+      '<span class="font-semibold" data-countdown-minutes>' + escapeHtml(parts.minutes) + '</span>' +
+      '<span class="text-muted-foreground">:</span>' +
+      '<span class="font-semibold" data-countdown-seconds>' + escapeHtml(parts.seconds) + "</span>" +
+      "</div>"
+    );
+  }
+
+  function renderConditionStars(score) {
+    var normalizedScore = Number(score || 0);
+    if (!normalizedScore) return "";
+
+    var stars = "";
+    for (var i = 1; i <= 5; i += 1) {
+      stars += '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-5 h-5 ' + (i <= normalizedScore ? "fill-yellow-400 text-yellow-400" : "fill-muted text-muted") + '"><path d="M11.48 3.499a.562.562 0 0 1 1.039 0l2.125 5.111a.56.56 0 0 0 .475.344l5.518.442c.499.04.701.663.321 1l-4.204 3.602a.56.56 0 0 0-.182.557l1.285 5.386a.562.562 0 0 1-.84.61l-4.725-2.885a.56.56 0 0 0-.586 0L6.982 20.55a.562.562 0 0 1-.84-.61l1.285-5.386a.56.56 0 0 0-.182-.557L3.04 10.396a.563.563 0 0 1 .321-1l5.518-.442a.56.56 0 0 0 .475-.344z"></path></svg>';
+    }
+
+    return '<div class="flex items-center gap-3 mb-3"><div class="flex items-center gap-1">' + stars + '</div><span class="text-sm font-medium text-muted-foreground">' + escapeHtml(String(normalizedScore)) + '/5</span></div>';
+  }
+
+  function getAdditionalDetailsEntries(lot) {
+    var extra = lot.extra || {};
+    var metadata = extra.Metadata || extra.metadata;
+    if (!metadata || typeof metadata !== "object") return [];
+
+    var labelMap = {
+      Year: "Year",
+      Materials: "Materials",
+      Color: "Color",
+      "Handbag Size": "Size",
+      "Handbag Style": "Style",
+      "Handbag Type": "Type",
+      "Watch Type": "Type",
+      "Case Size (mm)": "Case Size",
+      "Movement Type": "Movement",
+      "Reference Number": "Reference",
+      Brand: "Brand",
+      Designer: "Designer",
+      Maker: "Maker",
+      Occasion: "Occasion",
+      Hardware: "Hardware",
+      Interior: "Interior",
+      Closure: "Closure",
+      Strap: "Strap",
+      "Dial Color": "Dial",
+      Bezel: "Bezel",
+      Bracelet: "Bracelet",
+      "Gemstone Type": "Gemstone",
+      "Gemstone Cut": "Cut",
+      "Carat Weight": "Carat",
+      Metal: "Metal",
+      "Ring Size": "Size",
+      Artist: "Artist",
+      Medium: "Medium",
+      Subject: "Subject",
+      Style: "Style",
+      Period: "Period"
+    };
+    var excludedKeys = {
+      Currency: true,
+      Tags: true,
+      "Ships To": true,
+      "Sothebys Url": true,
+      sothebys_url: true,
+      "Period - General": true,
+      Gender: true,
+      sothebys_id: true,
+      condition_score: true,
+      metadata: true,
+      property_type: true,
+      currency: true
+    };
+
+    return Object.keys(metadata).reduce(function (entries, rawKey) {
+      var key = String(rawKey || "").trim();
+      if (!key || excludedKeys[key]) return entries;
+      var lowerKey = key.toLowerCase();
+      if (lowerKey.indexOf("currency") !== -1 || lowerKey === "metadata" || lowerKey === "condition_score") return entries;
+
+      var rawValue = metadata[rawKey];
+      if (rawValue == null || rawValue === "") return entries;
+
+      var value = "";
+      if (Array.isArray(rawValue)) {
+        value = rawValue.filter(function (item) { return item != null && item !== ""; }).join(", ");
+      } else if (typeof rawValue === "boolean") {
+        value = rawValue ? "Yes" : "No";
+      } else if (typeof rawValue === "number") {
+        value = String(rawValue);
+      } else {
+        value = stripHtml(String(rawValue));
+      }
+
+      value = String(value || "").trim();
+      if (!value) return entries;
+
+      entries.push({
+        label: labelMap[key] || key,
+        value: value
+      });
+      return entries;
+    }, []);
+  }
+
+  function renderAdditionalDetails(lot, strings) {
+    var items = getAdditionalDetailsEntries(lot);
+    if (!items.length) return "";
+
+    return '<div><h2 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.additionalDetails) + '</h2><dl class="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-3">' +
+      items.map(function (entry) {
+        return '<div class="flex flex-col gap-1"><dt class="text-sm font-medium text-muted-foreground">' + escapeHtml(entry.label) + '</dt><dd class="text-sm text-foreground">' + escapeHtml(entry.value || "N/A") + '</dd></div>';
+      }).join("") +
+      "</dl></div>";
+  }
+
   function renderLot(main, lot, relatedLots, bids, strings) {
     injectLotPageStyles();
     var images = lot.lot_images || [];
@@ -572,167 +798,102 @@
     var minimumBid = Math.max(Number(lot.current_bid || 0) + Number(lot.minimum_increment || 0), Number(lot.starting_bid || 0));
     var categoryName = (lot.categories && lot.categories.name) || lot.artist_maker || "General";
     var artistMaker = lot.artist_maker || categoryName;
-    var description = renderRichText(lot.description || "");
-    var condition = renderRichText(lot.condition || "");
-    var provenance = renderRichText(lot.provenance || "");
-    var shippingInfo = renderRichText(lot.shipping_info || "");
-    var shortDescription = stripHtml(lot.description || "").slice(0, 140) || "The Santos-Dumont is one of the most iconic lines of Cartier.";
+    var description = sanitizeProductHtml(lot.description || "");
+    var condition = sanitizeProductHtml(stripGuaranteeHtml(lot.condition || ""));
+    var conditionText = stripHtml(stripGuaranteeHtml(lot.condition || ""));
+    var provenance = sanitizeProductHtml(lot.provenance || "");
+    var shortDescription = stripHtml(lot.description || "").slice(0, 180) || "Curated luxury lot.";
+    var additionalDetailsHtml = renderAdditionalDetails(lot, strings);
+    var conditionStarsHtml = renderConditionStars(lot.extra && lot.extra.condition_score);
     var closed = getStatusLabel(lot, strings) === strings.bid.auctionEnded;
-    var additionalDetails = [
-      ["Maker", artistMaker],
-      ["Year", lot.year || "Not specified"],
-      ["Lot", lot.lot_number || "Not assigned"],
-      ["Materials", lot.materials || "Not specified"],
-      ["Dimensions", lot.dimensions || "Not specified"],
-      ["Closes", formatDate(lot.end_time) || "Not specified"],
-    ].filter(function (entry) {
-      return entry[1];
-    });
+    var bidCount = Array.isArray(bids) && bids.length ? bids.length : buildFallbackBids(lot).length;
+    var safeImages = images.length ? images : [{ image_url: primaryImage }];
+    var categorySlug = (lot.categories && lot.categories.slug) || "";
+    var categoryHref = categorySlug ? "../category/" + encodeURIComponent(categorySlug) + ".html" : "../auctions.html";
+    var brandName = artistMaker && artistMaker !== categoryName ? artistMaker : categoryName;
+    var brandSlug = String(brandName || "")
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    var brandHref = brandSlug ? "../category/" + encodeURIComponent(brandSlug) + ".html" : categoryHref;
+    var thumbsHtml = safeImages.length > 1
+      ? safeImages.map(function (image, index) {
+          return '<button type="button" class="relative aspect-square bg-muted/20 rounded-sm overflow-hidden cursor-pointer transition-all ' + (index === 0 ? "ring-2 ring-foreground" : "hover:opacity-80") + '" data-gallery-thumb data-image-index="' + index + '" data-image-src="' + escapeHtml(image.image_url) + '"><img alt="' + escapeHtml("View " + (index + 1)) + '" class="w-full h-full object-cover" src="' + escapeHtml(image.image_url) + '"></button>';
+        }).join("")
+      : "";
+    var relatedHtml = relatedLots.map(function (item) { return renderRelatedCard(item, strings); }).join("");
 
     document.title = lot.title + " | Sotheby's";
 
     main.innerHTML =
-      '<div id="lot-sticky-bar" class="pointer-events-none fixed inset-x-0 top-16 md:top-20 opacity-0 transition-all duration-200" style="z-index:140;transform:translateY(-14px);">' +
-      '<div style="max-width:1320px;margin:0 auto;padding:10px 16px 0;">' +
-      '<div style="display:flex;align-items:center;justify-content:space-between;gap:24px;padding:14px 22px;border:1px solid rgba(0,0,0,0.08);border-radius:0 0 18px 18px;background:rgba(255,255,255,0.98);box-shadow:0 18px 34px rgba(15,15,15,0.08);backdrop-filter:blur(12px);">' +
-      '<div class="min-w-0 flex items-center gap-4" style="flex:1 1 auto;min-width:0;">' +
-      '<div class="h-12 w-12 shrink-0 overflow-hidden rounded-lg border border-border/40 bg-muted/20"><img src="' + escapeHtml(primaryImage) + '" alt="' + escapeHtml(lot.title) + '" class="h-full w-full object-cover" /></div>' +
-      '<div class="min-w-0">' +
-      '<p class="truncate font-serif" style="font-size:1.15rem;line-height:1.15;">' + escapeHtml(lot.title) + "</p>" +
-      '<p class="truncate text-sm text-muted-foreground" style="margin-top:4px;max-width:56rem;">' + escapeHtml(stripHtml(lot.description || "").slice(0, 140) || categoryName) + "</p>" +
-      "</div>" +
-      "</div>" +
-      '<div class="hidden shrink-0 items-center gap-8 md:flex" style="flex:0 0 auto;">' +
-      '<div class="text-right"><p class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.productPage.currentBid) + '</p><p class="mt-1 text-[2rem] font-semibold leading-none tabular-nums">' + formatCurrency(lot.current_bid || 0) + "</p></div>" +
+      '<div data-lot-sticky-bar class="fixed top-0 left-0 right-0 z-[110] bg-background border-b border-border/30 transition-transform duration-300 -translate-y-full">' +
+      '<div class="container mx-auto px-4 py-3 flex items-center justify-between gap-4">' +
+      '<div class="flex items-center gap-4 flex-1 min-w-0">' +
+      '<img alt="' + escapeHtml(lot.title) + '" class="w-12 h-12 object-cover rounded-sm flex-shrink-0" src="' + escapeHtml(primaryImage) + '">' +
+      '<div class="min-w-0 flex-1"><h2 class="font-serif text-sm md:text-base font-medium truncate">' + escapeHtml(lot.title) + '</h2><p class="text-xs text-muted-foreground truncate">' + escapeHtml(shortDescription) + '</p></div>' +
+      '</div>' +
+      '<div class="flex items-center gap-4 flex-shrink-0">' +
+      '<div class="text-right hidden sm:block"><p class="text-xs text-muted-foreground uppercase tracking-wider">' + escapeHtml(strings.productPage.currentBid) + '</p><p class="text-lg font-semibold">' + formatCurrency(lot.current_bid || 0) + '</p></div>' +
       (
         closed
-          ? '<button type="button" disabled class="inline-flex items-center justify-center rounded-xl bg-[#9f9f9f] px-7 py-3 text-sm font-medium text-white cursor-not-allowed opacity-70" style="min-width:132px;">' + escapeHtml(strings.bid.auctionEnded) + "</button>"
-          : '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex items-center justify-center rounded-xl bg-primary px-7 py-3 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90" style="min-width:132px;">' + escapeHtml(strings.productPage.placeBid) + "</a>"
+          ? '<button data-slot="button" type="button" disabled class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 h-9 px-4 py-2 bg-foreground text-background">' + escapeHtml(strings.bid.auctionEnded) + '</button>'
+          : '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '"><button data-slot="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 h-9 px-4 py-2 bg-foreground text-background hover:bg-foreground/90">' + escapeHtml(strings.productPage.placeBid) + '</button></a>'
       ) +
-      "</div>" +
+      '</div></div></div>' +
+      '<div class="border-b border-border/30"><div class="container mx-auto px-4 py-3"><div class="flex items-center gap-2 text-sm text-muted-foreground">' +
+      '<a class="hover:text-foreground transition-colors hover:underline" href="../auctions.html">' + escapeHtml(strings.nav.shopAll) + '</a><span>/</span>' +
+      '<a class="hover:text-foreground transition-colors hover:underline" href="' + escapeHtml(categoryHref) + '">' + escapeHtml(categoryName) + '</a><span>/</span>' +
+      '<a class="hover:text-foreground transition-colors hover:underline" href="' + escapeHtml(brandHref) + '">' + escapeHtml(brandName) + '</a><span>/</span>' +
+      '<span class="text-foreground truncate max-w-xs sm:max-w-md md:max-w-lg">' + escapeHtml(lot.title) + "</span>" +
       "</div></div></div>" +
-
-      '<section class="border-b bg-background"><div class="container mx-auto px-4 sm:px-6 lg:px-8 py-4"><div class="flex items-center gap-2 text-sm text-muted-foreground">' +
-      '<a class="hover:text-foreground transition-colors" href="../auctions.html">' + escapeHtml(strings.nav.shopAll) + "</a>" +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="m9 18 6-6-6-6"></path></svg>' +
-      '<span class="truncate text-foreground font-medium">' + escapeHtml(lot.title) + "</span>" +
-      "</div></div></section>" +
-
-      '<section class="py-8 sm:py-12 lg:py-16"><div class="container mx-auto px-4 sm:px-6 lg:px-8"><div class="lot-shell">' +
-      '<div class="lot-two-col">' +
-
-      '<div class="lot-left-col space-y-10">' +
-      '<div class="space-y-6">' +
-      '<div class="overflow-hidden rounded-xl border border-border/50 bg-muted/20">' +
-      '<div class="aspect-[4/5] sm:aspect-square"><img id="lot-primary-image" src="' + escapeHtml(primaryImage) + '" alt="' + escapeHtml(lot.title) + '" class="h-full w-full object-cover" /></div>' +
-      "</div>" +
-
-      (images.length > 1
-        ? '<div class="grid grid-cols-4 gap-2 sm:grid-cols-6 lg:grid-cols-5">' +
-          images.map(function (image, index) {
-            return (
-              '<button type="button" class="lot-thumb overflow-hidden rounded-md border border-border/50 bg-background transition-all hover:border-foreground/40" data-image-src="' + escapeHtml(image.image_url) + '">' +
-              '<div class="aspect-square"><img src="' + escapeHtml(image.image_url) + '" alt="' + escapeHtml(lot.title + " " + (index + 1)) + '" class="h-full w-full object-cover" /></div>' +
-              "</button>"
-            );
-          }).join("") +
-          "</div>"
+      '<div class="container mx-auto px-4 py-6 md:py-12"><div class="flex flex-col lg:grid lg:grid-cols-[minmax(0,600px)_320px] gap-8 lg:gap-8 lg:justify-center">' +
+      '<div class="space-y-4 order-1">' +
+      '<div class="relative aspect-square lg:aspect-[4/3] bg-muted/20 rounded-sm overflow-hidden cursor-zoom-in group max-w-[600px] mx-auto lg:mx-0">' +
+      '<img id="lot-primary-image" alt="' + escapeHtml(lot.title) + '" class="w-full h-full object-contain bg-muted/10" src="' + escapeHtml(primaryImage) + '">' +
+      '<div class="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center pointer-events-none"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-zoom-in h-8 w-8 text-white opacity-0 group-hover:opacity-100 transition-opacity"><circle cx="11" cy="11" r="8"></circle><line x1="21" x2="16.65" y1="21" y2="16.65"></line><line x1="11" x2="11" y1="8" y2="14"></line><line x1="8" x2="14" y1="11" y2="11"></line></svg></div>' +
+      (safeImages.length > 1
+        ? '<button type="button" data-gallery-prev class="absolute left-4 top-1/2 -translate-y-1/2 bg-background/90 backdrop-blur-sm p-2 rounded-full hover:bg-background transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-left h-5 w-5"><path d="m15 18-6-6 6-6"></path></svg></button>' +
+          '<button type="button" data-gallery-next class="absolute right-4 top-1/2 -translate-y-1/2 bg-background/90 backdrop-blur-sm p-2 rounded-full hover:bg-background transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-chevron-right h-5 w-5"><path d="m9 18 6-6-6-6"></path></svg></button>'
         : "") +
       "</div>" +
-
-      '<div class="space-y-8 border-t border-border/40 pt-8">' +
-      '<div><p class="text-xs uppercase tracking-[0.24em] text-muted-foreground">' + escapeHtml(strings.productPage.lotDetails) + '</p><h2 class="mt-2 font-serif text-3xl sm:text-4xl">' + escapeHtml(lot.title) + "</h2></div>" +
-      '<div class="space-y-6">' +
-      '<div class="rounded-xl border border-border/50 bg-background p-6 sm:p-8">' +
-      '<h3 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.description) + "</h3>" +
-      '<div class="prose prose-neutral max-w-none text-sm sm:text-base text-foreground">' + description + "</div>" +
+      (safeImages.length > 1 ? '<div class="grid grid-cols-5 gap-2 mt-4 max-w-[600px] mx-auto lg:mx-0">' + thumbsHtml + "</div>" : "") +
       "</div>" +
-
-      '<div class="rounded-xl border border-border/50 bg-background p-6 sm:p-8">' +
-      '<h3 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.conditionReport) + "</h3>" +
-      '<div class="prose prose-neutral max-w-none text-sm sm:text-base text-foreground">' + (condition || "<p>Condition details are not available.</p>") + "</div>" +
-      "</div>" +
-
-      '<div class="rounded-xl border border-border/50 bg-background p-6 sm:p-8">' +
-      '<h3 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.provenance) + "</h3>" +
-      '<div class="prose prose-neutral max-w-none text-sm sm:text-base text-foreground">' + (provenance || "<p>Provenance information is not available for this lot.</p>") + "</div>" +
-      "</div>" +
-
-      "</div>" +
-      "</div>" +
-      "</div>" +
-
-      '<div class="lot-right-col lot-sticky-col">' +
-      '<div class="space-y-5">' +
-      '<div class="flex items-center gap-2">' +
-      '<button type="button" data-watchlist-button data-lot-id="' + escapeHtml(lot.id || "") + '" class="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-border/60 bg-background text-foreground transition-all hover:bg-accent disabled:opacity-60" aria-label="Save lot" title="Save lot">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" data-watchlist-icon width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5 transition-all"><path d="m19 21-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"></path></svg>' +
-      "</button>" +
-      '<div class="inline-flex h-10 items-center gap-3 rounded-xl border border-border/60 bg-background px-4 text-sm text-foreground">' +
-      '<span>' + escapeHtml(strings.productPage.freeExpressDelivery) + '</span>' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5"><rect width="8" height="7" x="3" y="11" rx="1"></rect><path d="M11 12h4l3 3v3h-7"></path><path d="M7 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"></path><path d="M17 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z"></path></svg>' +
-      "</div>" +
-      "</div>" +
-
+      '<div class="lg:sticky lg:top-24 lg:self-start space-y-4 lg:h-fit order-2">' +
+      '<div class="flex items-center justify-between gap-3"><div class="flex items-center gap-2"></div><div class="flex items-center gap-2">' +
+      '<button data-slot="button" data-watchlist-button data-lot-id="' + escapeHtml(lot.id || "") + '" class="inline-flex items-center justify-center whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 rounded-md gap-1.5 has-[&gt;svg]:px-2.5 h-8 px-3 bg-transparent" aria-label="Save lot" title="Save lot"><svg xmlns="http://www.w3.org/2000/svg" data-watchlist-icon width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-heart h-3.5 w-3.5"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"></path></svg></button>' +
+      '<button data-open-shipping-info class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 rounded-md gap-1.5 has-[&gt;svg]:px-2.5 h-8 px-3 bg-transparent text-xs" type="button"><span class="mr-1.5">' + escapeHtml(strings.productPage.freeExpressDelivery) + '</span><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-truck h-3.5 w-3.5"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"></path><path d="M15 18H9"></path><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"></path><circle cx="17" cy="18" r="2"></circle><circle cx="7" cy="18" r="2"></circle></svg></button>' +
+      "</div></div>" +
+      '<div class="flex flex-col lg:flex-row"><div class="flex-1"><h1 class="font-serif text-2xl md:text-3xl mb-2 leading-tight">' + escapeHtml(lot.title) + '</h1><p class="text-sm text-muted-foreground leading-relaxed">' + escapeHtml(shortDescription) + "</p></div></div>" +
+      '<div data-orientation="horizontal" role="none" data-slot="separator" class="bg-border shrink-0 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px"></div>' +
       '<div class="space-y-3">' +
-      '<h1 class="font-serif text-[3.25rem] leading-[1.08] tracking-[-0.03em]">' + escapeHtml(lot.title) + "</h1>" +
-      '<p class="max-w-[34rem] text-[15px] leading-8 text-muted-foreground">' + escapeHtml(shortDescription) + "</p>" +
-      "</div>" +
-
-      '<div class="space-y-5 border-t border-border/50 pt-5">' +
-      '<div class="flex items-start justify-between gap-4 text-sm text-muted-foreground">' +
-      '<div class="space-y-1">' +
-      '<div>Ending in: <span data-end-time="' + escapeHtml(lot.end_time) + '">' + getCountdown(lot.end_time) + "</span></div>" +
-      '<div class="flex items-center gap-2 ' + (closed ? 'text-red-600' : 'text-foreground') + '">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v5"></path><path d="M12 16h.01"></path></svg>' +
-      '<span class="font-medium">' + escapeHtml(getStatusLabel(lot, strings)) + "</span>" +
-      "</div>" +
-      "</div>" +
-      '<div class="pt-1 text-right">' + escapeHtml(String(bids.length)) + " bids</div>" +
-      "</div>" +
-
-      '<div class="border-b border-border/50 pb-5">' +
-      '<p class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.productPage.estimate) + '</p>' +
-      '<p class="mt-2 text-[2.05rem] font-semibold tracking-[-0.02em]">' + escapeHtml(estimate) + "</p>" +
-      "</div>" +
-
-      '<div class="border-b border-border/50 pb-5">' +
-      '<p class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.productPage.currentBid) + "</p>" +
-      '<p class="mt-2 text-[3.2rem] font-semibold leading-none tracking-[-0.04em] tabular-nums">' + formatCurrency(lot.current_bid || 0) + "</p>" +
-      '<p class="mt-4 max-w-[26rem] text-sm leading-7 text-muted-foreground">' + escapeHtml(strings.product.noBidPaymentRequired) + "</p>" +
-      "</div>" +
-
-      '<div class="grid gap-3 sm:grid-cols-2">' +
+      '<div class="flex items-center justify-between gap-2 text-xs"><div class="flex flex-col gap-1"><span class="text-muted-foreground">Ending in: ' + escapeHtml(formatAbsoluteDate(lot.end_time)) + '</span><div class="flex items-center gap-2 text-xs"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock w-4 h-4 text-muted-foreground"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>' + renderCountdownDisplay(lot.end_time, strings.bid.auctionEnded) + '</div></div><span class="text-muted-foreground">' + escapeHtml(String(bidCount)) + ' bids</span></div>' +
+      '<div class="pb-3 border-b border-border/50"><p class="text-xs font-medium text-foreground/70 uppercase tracking-wider mb-1.5">Estimate Price</p><p class="text-lg font-semibold text-foreground/80">' + escapeHtml(estimate) + "</p></div>" +
+      '<div class="space-y-1.5"><span class="text-xs text-muted-foreground uppercase tracking-wider">' + escapeHtml(strings.productPage.currentBid) + '</span><div class="text-3xl font-semibold">' + formatCurrency(lot.current_bid || 0) + '</div><p class="text-[11px] text-muted-foreground/70 leading-relaxed pt-1">' + escapeHtml(strings.product.noBidPaymentRequired) + "</p></div>" +
+      '<button data-slot="dialog-trigger" type="button" data-open-bid-history class="inline-flex items-center justify-center whitespace-nowrap font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive hover:text-accent-foreground dark:hover:bg-accent/50 rounded-md gap-1.5 px-3 has-[&gt;svg]:px-2.5 w-full text-xs h-8 hover:bg-muted/50" aria-haspopup="dialog" aria-expanded="false" data-state="closed"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trending-up h-3.5 w-3.5 mr-1.5"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline><polyline points="16 7 22 7 22 13"></polyline></svg>' + escapeHtml(strings.productPage.viewBidHistory) + '</button>' +
       (
         closed
-          ? '<button type="button" disabled class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-[#9f9f9f] px-6 text-sm font-medium text-white cursor-not-allowed opacity-70">' + escapeHtml(strings.bid.auctionEnded + " - Bidding Closed") + "</button>"
-          : '<a href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '" class="inline-flex h-11 w-full items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.productPage.placeBid) + "</a>"
+          ? '<button data-slot="button" type="button" disabled class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive bg-primary text-primary-foreground px-4 py-2 has-[&gt;svg]:px-3 w-full h-11">' + escapeHtml(strings.bid.auctionEnded) + "</button>"
+          : '<a class="block" href="' + BASE_PATH + 'bidding/index.html?slug=' + encodeURIComponent(lot.slug || "") + '"><button data-slot="button" type="button" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&amp;_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive bg-primary text-primary-foreground hover:bg-primary/90 px-4 py-2 has-[&gt;svg]:px-3 w-full h-11">' + escapeHtml(strings.productPage.placeBid) + "</button></a>"
       ) +
-      '<button type="button" data-open-bid-history class="inline-flex h-11 w-full items-center justify-center gap-3 rounded-xl border border-border bg-background px-6 text-sm font-medium transition-all hover:bg-accent">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4"><path d="m7 7 10 10"></path><path d="M17 7v10H7"></path></svg>' +
-      '<span>' + escapeHtml(strings.productPage.viewBidHistory) + "</span>" +
-      "</button>" +
       "</div>" +
-
-      '<div class="grid grid-cols-2 gap-6 border-t border-border/50 pt-5">' +
-      '<div class="flex items-start gap-3">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 h-4 w-4 text-muted-foreground"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"></path></svg>' +
-      '<div><p class="text-sm font-medium">' + escapeHtml(strings.productPage.authenticity) + '</p><p class="text-sm text-muted-foreground">' + escapeHtml(strings.productPage.guaranteed) + "</p></div>" +
-      "</div>" +
-      '<div class="flex items-start gap-3">' +
-      '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" class="mt-0.5 h-4 w-4 text-muted-foreground"><rect width="16" height="12" x="4" y="6" rx="2"></rect><path d="M4 10h16"></path></svg>' +
-      '<div><p class="text-sm font-medium">' + escapeHtml(strings.productPage.securePayment) + '</p><p class="text-sm text-muted-foreground">' + escapeHtml(strings.productPage.protected) + "</p></div>" +
+      '<div data-orientation="horizontal" role="none" data-slot="separator" class="bg-border shrink-0 data-[orientation=horizontal]:h-px data-[orientation=horizontal]:w-full data-[orientation=vertical]:h-full data-[orientation=vertical]:w-px"></div>' +
+      '<div class="grid grid-cols-2 gap-3">' +
+      '<div class="flex items-start gap-2"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path></svg><div class="min-w-0"><p class="font-medium text-xs">' + escapeHtml(strings.productPage.authenticity) + '</p><p class="text-xs text-muted-foreground">' + escapeHtml(strings.productPage.guaranteed) + "</p></div></div>" +
+      '<div class="flex items-start gap-2"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-credit-card h-4 w-4 text-muted-foreground mt-0.5 flex-shrink-0"><rect width="20" height="14" x="2" y="5" rx="2"></rect><line x1="2" x2="22" y1="10" y2="10"></line></svg><div class="min-w-0"><p class="font-medium text-xs">' + escapeHtml(strings.productPage.securePayment) + '</p><p class="text-xs text-muted-foreground">' + escapeHtml(strings.productPage.protected) + "</p></div></div>" +
       "</div>" +
       "</div>" +
+      '<div class="mt-8 lg:mt-12 space-y-8 lg:mr-8 order-3 lg:col-start-1 lg:row-start-2">' +
+      '<div><h2 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.description) + '</h2><div class="text-muted-foreground leading-relaxed prose prose-sm max-w-none">' + description + "</div></div>" +
+      '<div><h2 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.conditionReport) + '</h2>' + conditionStarsHtml + '<div class="text-muted-foreground leading-relaxed">' + escapeHtml(conditionText || "Like new") + "</div></div>" +
+      additionalDetailsHtml +
+      (provenance ? '<div><h2 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.provenance) + '</h2><div class="text-muted-foreground leading-relaxed prose prose-sm max-w-none">' + provenance + '</div></div>' : "") +
+      '<div><h2 class="font-serif text-2xl mb-4">' + escapeHtml(strings.productPage.shipping) + '</h2><p class="text-muted-foreground leading-relaxed">' + escapeHtml(strings.productPage.worldwideShipping) + "</p></div>" +
       "</div>" +
-      "</div></div></div></section>" +
-
-      '<section class="py-8 sm:py-12 lg:py-16 bg-background" data-no-translate="true"><div class="container mx-auto px-4 sm:px-6 lg:px-8">' +
-      '<div class="mb-6 sm:mb-8 flex flex-col sm:flex-row items-start sm:items-end justify-between gap-3"><div class="w-full sm:w-auto"><h2 id="lot-related-title" class="text-xl sm:text-2xl md:text-3xl lg:text-4xl font-serif mb-1 sm:mb-2 text-balance" data-no-translate="true">You May Also Like</h2><p id="lot-related-subtitle" class="text-xs sm:text-sm md:text-base text-muted-foreground" data-no-translate="true">Handpicked lots you may want to explore next</p></div><a class="text-xs sm:text-sm font-medium hover:underline underline-offset-4 flex items-center gap-1 transition-all whitespace-nowrap" href="../auctions.html" data-no-translate="true">View All<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-3 w-3 sm:h-4 sm:w-4"><path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path></svg></a></div>' +
-      '<div class="flex gap-3 sm:gap-4 overflow-x-auto pb-4 scrollbar-hide snap-x snap-mandatory" style="scrollbar-width:none;-ms-overflow-style:none">' + relatedLots.map(function (item) { return renderRelatedCard(item, strings); }).join("") + "</div>" +
-      "</div></section>" +
-
-      '<div id="lot-bid-history-modal" class="hidden fixed inset-0 z-[170]">' +
+      "</div>" +
+      '<div class="mt-12 space-y-4"><div class="flex items-center justify-between"><h2 class="font-serif text-2xl md:text-3xl">Related Items</h2><a class="text-sm text-primary hover:underline" href="' + escapeHtml(brandHref) + '">View All</a></div><div class="overflow-x-auto -mx-4 px-4 md:mx-0 md:px-0"><div class="flex gap-4 pb-4 min-w-min">' + relatedHtml + "</div></div></div></div>" +
+      '<div id="lot-bid-history-modal" class="hidden fixed inset-0 z-50">' +
       '<div data-bid-history-backdrop class="absolute inset-0 bg-black/45"></div>' +
       '<div class="absolute inset-0 flex items-center justify-center p-4">' +
       '<div class="w-full max-w-4xl rounded-2xl border border-border/50 bg-background shadow-2xl">' +
@@ -742,140 +903,98 @@
       "</div>" +
       '<div class="max-h-[70vh] overflow-auto px-6 py-5 sm:px-8">' +
       '<div class="overflow-x-auto"><table class="w-full min-w-[500px]"><thead><tr class="text-left text-xs uppercase tracking-[0.18em] text-muted-foreground"><th class="pb-3 pr-4">' + escapeHtml(strings.productPage.bidder) + '</th><th class="pb-3 pr-4">' + escapeHtml(strings.productPage.bidAmount) + '</th><th class="pb-3 pr-4">' + escapeHtml(strings.productPage.time) + '</th><th class="pb-3">' + escapeHtml(strings.productPage.increase) + "</th></tr></thead><tbody>" + renderBidRows(bids, lot) + "</tbody></table></div>" +
-      "</div></div></div></div>" +
+      "</div></div></div>" +
+      '<div id="lot-shipping-info-modal" class="hidden fixed inset-0 z-50">' +
+      '<div data-shipping-info-backdrop class="absolute inset-0 bg-black/45"></div>' +
+      '<div class="absolute inset-0 flex items-center justify-center p-4">' +
+      '<div role="dialog" aria-modal="true" data-state="open" data-slot="dialog-content" class="bg-background fixed top-[50%] left-[50%] z-50 grid w-full translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-lg max-w-md" style="pointer-events:auto;">' +
+      '<div data-slot="dialog-header" class="flex flex-col gap-2 text-center sm:text-left"><h2 data-slot="dialog-title" class="text-lg leading-none font-semibold">' + escapeHtml(strings.productPage.shippingInfo) + '</h2></div>' +
+      '<div class="space-y-4 py-4">' +
+      '<div class="flex items-start gap-3"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-truck h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"></path><path d="M15 18H9"></path><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"></path><circle cx="17" cy="18" r="2"></circle><circle cx="7" cy="18" r="2"></circle></svg><div><h3 class="font-medium mb-1">' + escapeHtml(strings.productPage.expressDeliveryIncluded) + '</h3><p class="text-sm text-muted-foreground leading-relaxed">' + escapeHtml(strings.productPage.shippingDesc) + '</p></div></div>' +
+      '<div class="flex items-start gap-3"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-shield h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path></svg><div><h3 class="font-medium mb-1">' + escapeHtml(strings.productPage.fullyInsured) + '</h3><p class="text-sm text-muted-foreground leading-relaxed">' + escapeHtml(strings.productPage.shippingInsurance) + '</p></div></div>' +
+      '<div class="flex items-start gap-3"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-credit-card h-5 w-5 text-muted-foreground mt-0.5 flex-shrink-0"><rect width="20" height="14" x="2" y="5" rx="2"></rect><line x1="2" x2="22" y1="10" y2="10"></line></svg><div><h3 class="font-medium mb-1">' + escapeHtml(strings.productPage.securePackaging) + '</h3><p class="text-sm text-muted-foreground leading-relaxed">' + escapeHtml(strings.productPage.shippingPackaging) + '</p></div></div>' +
+      '</div>' +
+      '<button type="button" data-close-shipping-info class="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&amp;_svg]:pointer-events-none [&amp;_svg]:shrink-0 [&amp;_svg:not([class*=\'size-\'])]:size-4" aria-label="Close"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-x"><path d="M18 6 6 18"></path><path d="m6 6 12 12"></path></svg><span class="sr-only">Close</span></button>' +
+      '</div></div></div>';
 
-      '<div id="lot-place-bid-modal" class="hidden fixed inset-0 z-[175]">' +
-      '<div data-place-bid-backdrop class="absolute inset-0 bg-black/45"></div>' +
-      '<div class="absolute inset-0 overflow-auto"><div class="min-h-full flex items-center justify-center p-4 sm:p-6">' +
-      '<div class="w-full max-w-6xl rounded-2xl border border-border/50 bg-background shadow-2xl">' +
-      '<div class="flex items-start justify-between gap-4 border-b border-border/40 px-6 py-5 sm:px-8">' +
-      '<div><h2 class="font-serif text-2xl">' + escapeHtml(strings.bidding.title) + '</h2><p class="mt-2 text-sm text-muted-foreground">' + escapeHtml(strings.bidding.subtitle) + '</p></div>' +
-      '<button type="button" data-close-place-bid class="inline-flex h-10 w-10 items-center justify-center rounded-md border border-border bg-background text-lg leading-none transition-all hover:bg-accent" aria-label="' + escapeHtml(strings.common.close) + '">×</button>' +
-      "</div>" +
-      '<div class="grid gap-0 lg:grid-cols-[1.1fr_0.72fr]">' +
-      '<div class="border-b border-border/40 p-6 sm:p-8 lg:border-b-0 lg:border-r">' +
-      '<div class="flex items-center gap-3 text-xs uppercase tracking-[0.18em] text-muted-foreground">' +
-      '<span data-place-bid-step-pill="1" class="rounded-full border border-border px-3 py-1 font-medium bg-foreground text-background">' + escapeHtml(strings.bidding.step1) + '</span>' +
-      '<span data-place-bid-step-pill="2" class="rounded-full border border-border px-3 py-1">' + escapeHtml(strings.bidding.step2) + '</span>' +
-      '<span data-place-bid-step-pill="3" class="rounded-full border border-border px-3 py-1">' + escapeHtml(strings.bidding.step3) + '</span>' +
-      "</div>" +
-      '<div class="mt-8" data-place-bid-step="1">' +
-      '<h3 class="font-serif text-3xl">' + escapeHtml(strings.bidding.selectBidAmount) + '</h3>' +
-      '<p class="mt-3 text-sm text-muted-foreground">' + escapeHtml(strings.bidding.selectPreset) + '</p>' +
-      '<div class="mt-6 grid gap-3 sm:grid-cols-2">' +
-      '<button type="button" data-bid-choice class="rounded-xl border border-border bg-background px-5 py-4 text-left transition-all hover:border-foreground/30" data-bid-amount="' + escapeHtml(String(minimumBid)) + '"><div class="text-xs uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.bidding.minimumBid) + '</div><div class="mt-2 text-2xl font-semibold tabular-nums">' + formatCurrency(minimumBid) + '</div></button>' +
-      '<button type="button" data-bid-choice class="rounded-xl border border-border bg-background px-5 py-4 text-left transition-all hover:border-foreground/30" data-bid-amount="' + escapeHtml(String(minimumBid + 250)) + '"><div class="text-xs uppercase tracking-[0.18em] text-muted-foreground">+ 250 EUR</div><div class="mt-2 text-2xl font-semibold tabular-nums">' + formatCurrency(minimumBid + 250) + '</div></button>' +
-      '<button type="button" data-bid-choice class="rounded-xl border border-border bg-background px-5 py-4 text-left transition-all hover:border-foreground/30" data-bid-amount="' + escapeHtml(String(minimumBid + 500)) + '"><div class="text-xs uppercase tracking-[0.18em] text-muted-foreground">+ 500 EUR</div><div class="mt-2 text-2xl font-semibold tabular-nums">' + formatCurrency(minimumBid + 500) + '</div></button>' +
-      '<button type="button" data-bid-choice class="rounded-xl border border-border bg-background px-5 py-4 text-left transition-all hover:border-foreground/30" data-bid-amount="' + escapeHtml(String(minimumBid + 1000)) + '"><div class="text-xs uppercase tracking-[0.18em] text-muted-foreground">+ 1000 EUR</div><div class="mt-2 text-2xl font-semibold tabular-nums">' + formatCurrency(minimumBid + 1000) + '</div></button>' +
-      "</div>" +
-      '<div class="mt-6">' +
-      '<label class="text-sm font-medium" for="place-bid-custom-amount">' + escapeHtml(strings.bidding.customAmount) + '</label>' +
-      '<input id="place-bid-custom-amount" data-place-bid-custom-input type="number" min="' + escapeHtml(String(minimumBid)) + '" step="50" value="' + escapeHtml(String(minimumBid)) + '" class="mt-2 h-12 w-full rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30" placeholder="' + escapeHtml(strings.bidding.enterCustomBid) + '"/>' +
-      "</div>" +
-      '<div class="mt-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">' +
-      '<p class="text-sm text-muted-foreground">' + escapeHtml(strings.product.noBidPaymentRequired) + '</p>' +
-      '<button type="button" data-place-bid-next class="inline-flex h-11 items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.bidding.confirmBid) + "</button>" +
-      "</div>" +
-      "</div>" +
-      '<div class="mt-8 hidden" data-place-bid-step="2">' +
-      '<h3 class="font-serif text-3xl">' + escapeHtml(strings.bidding.bidderInformation) + '</h3>' +
-      '<div class="mt-6 grid gap-4 sm:grid-cols-2">' +
-      '<input data-place-bid-field type="text" placeholder="' + escapeHtml(strings.bidding.firstName) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="text" placeholder="' + escapeHtml(strings.bidding.lastName) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="email" placeholder="' + escapeHtml(strings.bidding.emailPlaceholder) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="tel" placeholder="' + escapeHtml(strings.bidding.phone) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="text" placeholder="' + escapeHtml(strings.bidding.addressLine1) + '" class="sm:col-span-2 h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="text" placeholder="' + escapeHtml(strings.bidding.city) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      '<input data-place-bid-field type="text" placeholder="' + escapeHtml(strings.bidding.country) + '" class="h-12 rounded-xl border border-border bg-background px-4 text-base outline-none transition-all focus:border-foreground/30"/>' +
-      "</div>" +
-      '<div class="mt-8 flex items-center justify-between gap-3">' +
-      '<button type="button" data-place-bid-back class="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-6 text-sm font-medium transition-all hover:bg-accent">' + escapeHtml(strings.common.back) + '</button>' +
-      '<button type="button" data-place-bid-next class="inline-flex h-11 items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.bidding.continueToPayment) + "</button>" +
-      "</div>" +
-      "</div>" +
-      '<div class="mt-8 hidden" data-place-bid-step="3">' +
-      '<h3 class="font-serif text-3xl">' + escapeHtml(strings.bidding.selectPaymentMethod) + '</h3>' +
-      '<div class="mt-6 rounded-2xl border border-border/50 bg-muted/20 p-5">' +
-      '<div class="flex items-start gap-4">' +
-      '<div class="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-background border border-border/50"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-5 w-5"><rect width="20" height="14" x="2" y="5" rx="2"></rect><path d="M2 10h20"></path></svg></div>' +
-      '<div><p class="font-medium">' + escapeHtml(strings.bidding.creditOrDebitCard) + '</p><p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(strings.bidding.visaMastercard) + " · " + escapeHtml(strings.bidding.fastAndSecure) + '</p></div>' +
-      "</div>" +
-      '<p class="mt-5 text-sm leading-6 text-muted-foreground">' + escapeHtml(strings.bidding.securePaymentDescription) + "</p>" +
-      "</div>" +
-      '<div class="mt-8 flex items-center justify-between gap-3">' +
-      '<button type="button" data-place-bid-back class="inline-flex h-11 items-center justify-center rounded-xl border border-border bg-background px-6 text-sm font-medium transition-all hover:bg-accent">' + escapeHtml(strings.common.back) + '</button>' +
-      '<button type="button" data-place-bid-submit class="inline-flex h-11 items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.bidding.completePayment) + "</button>" +
-      "</div>" +
-      "</div>" +
-      '<div class="mt-8 hidden text-center" data-place-bid-step="4">' +
-      '<div class="mx-auto inline-flex h-16 w-16 items-center justify-center rounded-full bg-primary/10 text-primary"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" class="h-8 w-8"><path d="m9 12 2 2 4-4"></path><circle cx="12" cy="12" r="10"></circle></svg></div>' +
-      '<h3 class="mt-6 font-serif text-3xl">' + escapeHtml(strings.bidding.thankYou) + '</h3>' +
-      '<p class="mt-3 text-sm text-muted-foreground">' + escapeHtml(strings.product.noBidPaymentRequired) + '</p>' +
-      '<button type="button" data-close-place-bid class="mt-8 inline-flex h-11 items-center justify-center rounded-xl bg-black px-6 text-sm font-medium text-white transition-all hover:opacity-90">' + escapeHtml(strings.common.close) + "</button>" +
-      "</div>" +
-      "</div>" +
-      '<aside class="bg-secondary/20 p-6 sm:p-8">' +
-      '<p class="text-xs uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.bidding.bidSummary) + '</p>' +
-      '<div class="mt-5 overflow-hidden rounded-2xl border border-border/50 bg-background">' +
-      '<div class="flex items-center gap-4 border-b border-border/40 p-4">' +
-      '<div class="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-muted/20"><img src="' + escapeHtml(primaryImage) + '" alt="' + escapeHtml(lot.title) + '" class="h-full w-full object-cover"/></div>' +
-      '<div class="min-w-0"><p class="line-clamp-2 font-serif text-lg leading-tight">' + escapeHtml(lot.title) + '</p><p class="mt-1 text-sm text-muted-foreground">' + escapeHtml(categoryName) + '</p></div>' +
-      "</div>" +
-      '<div class="space-y-4 p-4 text-sm">' +
-      '<div class="flex items-center justify-between gap-4"><span class="text-muted-foreground">' + escapeHtml(strings.bidding.currentBid) + '</span><span class="font-medium tabular-nums">' + formatCurrency(lot.current_bid || 0) + '</span></div>' +
-      '<div class="flex items-center justify-between gap-4"><span class="text-muted-foreground">' + escapeHtml(strings.bidding.minimumBid) + '</span><span class="font-medium tabular-nums">' + formatCurrency(minimumBid) + '</span></div>' +
-      '<div class="flex items-center justify-between gap-4"><span class="text-muted-foreground">' + escapeHtml(strings.bidding.yourBid) + '</span><span data-place-bid-summary class="font-semibold tabular-nums">' + formatCurrency(minimumBid) + '</span></div>' +
-      '<div class="rounded-xl bg-muted/30 p-4"><p class="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">' + escapeHtml(strings.bidding.authorizationHold) + '</p><p class="mt-2 font-medium">' + escapeHtml(strings.bidding.dueNow) + ': ' + formatCurrency(minimumBid) + '</p><p class="mt-2 text-xs leading-5 text-muted-foreground">' + escapeHtml(strings.bidding.authHoldDescription) + '</p></div>' +
-      '<p class="text-xs leading-5 text-muted-foreground">' + escapeHtml(strings.bidding.agreeToTerms) + ' <span class="underline">' + escapeHtml(strings.bidding.termsOfSale) + '</span>.</p>' +
-      "</div>" +
-      "</div>" +
-      "</aside>" +
-      "</div></div></div></div></div>";
+    ["lot-bid-history-modal", "lot-shipping-info-modal"].forEach(function (id) {
+      var freshNode = main.querySelector("#" + id);
+      if (!freshNode) return;
+      var existingNode = document.getElementById(id);
+      if (existingNode && existingNode !== freshNode) {
+        existingNode.remove();
+      }
+      document.body.appendChild(freshNode);
+    });
 
     updateCountdowns(main);
     wireGallery(main);
-    wireStickySummary(main);
     wireBidHistoryModal(main);
-    wirePlaceBidModal(main, lot, minimumBid, strings);
+    wireShippingInfoModal(main, strings);
+    wireStickyLotBar(main);
     wireWatchlistButton(main, lot);
-    var relatedTitle = document.getElementById("lot-related-title");
-    var relatedSubtitle = document.getElementById("lot-related-subtitle");
-    if (relatedTitle) relatedTitle.textContent = "You May Also Like";
-    if (relatedSubtitle) relatedSubtitle.textContent = "Handpicked lots you may want to explore next";
   }
 
   function wireGallery(scope) {
     var primary = scope.querySelector("#lot-primary-image");
     if (!primary) return;
-    scope.querySelectorAll(".lot-thumb").forEach(function (button) {
+    var thumbs = Array.from(scope.querySelectorAll("[data-gallery-thumb]"));
+    var prevButton = scope.querySelector("[data-gallery-prev]");
+    var nextButton = scope.querySelector("[data-gallery-next]");
+    var currentIndex = 0;
+
+    function setActive(index) {
+      if (!thumbs.length) return;
+      currentIndex = (index + thumbs.length) % thumbs.length;
+      var activeThumb = thumbs[currentIndex];
+      primary.src = activeThumb.getAttribute("data-image-src");
+      thumbs.forEach(function (thumb, thumbIndex) {
+        thumb.classList.toggle("ring-2", thumbIndex === currentIndex);
+        thumb.classList.toggle("ring-foreground", thumbIndex === currentIndex);
+        thumb.classList.toggle("hover:opacity-80", thumbIndex !== currentIndex);
+      });
+    }
+
+    thumbs.forEach(function (button, index) {
       button.addEventListener("click", function () {
-        primary.src = button.getAttribute("data-image-src");
+        setActive(index);
       });
     });
+
+    if (prevButton) {
+      prevButton.addEventListener("click", function () {
+        setActive(currentIndex - 1);
+      });
+    }
+
+    if (nextButton) {
+      nextButton.addEventListener("click", function () {
+        setActive(currentIndex + 1);
+      });
+    }
+
+    var initialIndex = thumbs.findIndex(function (thumb) {
+      return thumb.getAttribute("data-image-src") === primary.getAttribute("src");
+    });
+    setActive(initialIndex >= 0 ? initialIndex : 0);
   }
 
   function updateCountdowns(scope) {
     scope.querySelectorAll("[data-end-time]").forEach(function (node) {
       node.textContent = getCountdown(node.getAttribute("data-end-time"));
     });
-  }
-
-  function wireStickySummary(scope) {
-    var stickyBar = document.getElementById("lot-sticky-bar");
-    var heroSection = scope.querySelector("section.py-8");
-    if (!stickyBar || !heroSection) return;
-
-    function updateStickyBar() {
-      var rect = heroSection.getBoundingClientRect();
-      var shouldShow = rect.bottom <= 140;
-      stickyBar.style.opacity = shouldShow ? "1" : "0";
-      stickyBar.style.transform = shouldShow ? "translateY(0)" : "translateY(-12px)";
-      stickyBar.style.pointerEvents = shouldShow ? "auto" : "none";
-    }
-
-    updateStickyBar();
-    window.addEventListener("scroll", updateStickyBar, { passive: true });
-    window.addEventListener("resize", updateStickyBar);
+    scope.querySelectorAll("[data-countdown]").forEach(function (node) {
+      var parts = getCountdownParts(node.getAttribute("data-countdown"));
+      var daysNode = node.querySelector("[data-countdown-days]");
+      var hoursNode = node.querySelector("[data-countdown-hours]");
+      var minutesNode = node.querySelector("[data-countdown-minutes]");
+      var secondsNode = node.querySelector("[data-countdown-seconds]");
+      if (!daysNode || !hoursNode || !minutesNode || !secondsNode) return;
+      daysNode.textContent = parts.days;
+      hoursNode.textContent = parts.hours;
+      minutesNode.textContent = parts.minutes;
+      secondsNode.textContent = parts.seconds;
+    });
   }
 
   function wireBidHistoryModal(scope) {
@@ -888,11 +1007,13 @@
 
     function openModal() {
       modal.classList.remove("hidden");
+      modal.style.display = "block";
       document.body.style.overflow = "hidden";
     }
 
     function closeModal() {
       modal.classList.add("hidden");
+      modal.style.display = "";
       document.body.style.overflow = "";
     }
 
@@ -908,6 +1029,90 @@
         closeModal();
       }
     });
+  }
+
+  function wireShippingInfoModal(scope, strings) {
+    var buttons = scope.querySelectorAll("[data-open-shipping-info]");
+
+    function closeModal() {
+      var modal = document.getElementById("lot-shipping-info-runtime");
+      if (modal) modal.remove();
+      document.body.style.overflow = "";
+    }
+
+    function openModal() {
+      closeModal();
+
+      var modal = document.createElement("div");
+      modal.id = "lot-shipping-info-runtime";
+      modal.style.position = "fixed";
+      modal.style.inset = "0";
+      modal.style.zIndex = "999999";
+      modal.style.background = "rgba(0,0,0,0.45)";
+      modal.style.display = "flex";
+      modal.style.alignItems = "center";
+      modal.style.justifyContent = "center";
+      modal.style.padding = "1rem";
+
+      modal.innerHTML =
+        '<div data-shipping-runtime-dialog role="dialog" aria-modal="true" style="position:relative;width:min(100%,32rem);background:#fff;border:1px solid rgba(0,0,0,0.08);border-radius:12px;padding:24px;box-shadow:0 25px 50px rgba(0,0,0,0.18);color:#111827;">' +
+        '<div style="display:flex;flex-direction:column;gap:8px;text-align:left;"><h2 style="margin:0;font-size:18px;line-height:1.2;font-weight:600;">' + escapeHtml(strings.productPage.shippingInfo) + '</h2></div>' +
+        '<div style="display:flex;flex-direction:column;gap:16px;padding:16px 0;">' +
+        '<div style="display:flex;align-items:flex-start;gap:12px;"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="height:20px;width:20px;color:#6b7280;margin-top:2px;flex-shrink:0;"><path d="M14 18V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v11a1 1 0 0 0 1 1h2"></path><path d="M15 18H9"></path><path d="M19 18h2a1 1 0 0 0 1-1v-3.65a1 1 0 0 0-.22-.624l-3.48-4.35A1 1 0 0 0 17.52 8H14"></path><circle cx="17" cy="18" r="2"></circle><circle cx="7" cy="18" r="2"></circle></svg><div><h3 style="margin:0 0 4px 0;font-size:16px;font-weight:500;">' + escapeHtml(strings.productPage.expressDeliveryIncluded) + '</h3><p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;">' + escapeHtml(strings.productPage.shippingDesc) + '</p></div></div>' +
+        '<div style="display:flex;align-items:flex-start;gap:12px;"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="height:20px;width:20px;color:#6b7280;margin-top:2px;flex-shrink:0;"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"></path></svg><div><h3 style="margin:0 0 4px 0;font-size:16px;font-weight:500;">' + escapeHtml(strings.productPage.fullyInsured) + '</h3><p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;">' + escapeHtml(strings.productPage.shippingInsurance) + '</p></div></div>' +
+        '<div style="display:flex;align-items:flex-start;gap:12px;"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="height:20px;width:20px;color:#6b7280;margin-top:2px;flex-shrink:0;"><rect width="20" height="14" x="2" y="5" rx="2"></rect><line x1="2" x2="22" y1="10" y2="10"></line></svg><div><h3 style="margin:0 0 4px 0;font-size:16px;font-weight:500;">' + escapeHtml(strings.productPage.securePackaging) + '</h3><p style="margin:0;font-size:14px;line-height:1.6;color:#6b7280;">' + escapeHtml(strings.productPage.shippingPackaging) + '</p></div></div>' +
+        '</div>' +
+        '<button type="button" data-close-shipping-runtime aria-label="Close" style="position:absolute;top:16px;right:16px;border:0;background:transparent;font-size:24px;line-height:1;cursor:pointer;color:#6b7280;">×</button>' +
+        '</div>';
+
+      document.body.appendChild(modal);
+      document.body.style.overflow = "hidden";
+
+      modal.addEventListener("click", function (event) {
+        var dialog = modal.querySelector("[data-shipping-runtime-dialog]");
+        if (event.target === modal || event.target.closest("[data-close-shipping-runtime]")) {
+          closeModal();
+          return;
+        }
+        if (dialog && !dialog.contains(event.target)) {
+          closeModal();
+        }
+      });
+    }
+
+    buttons.forEach(function (button) {
+      button.addEventListener("click", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+          event.stopImmediatePropagation();
+        }
+        openModal();
+      }, true);
+    });
+
+    window.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        closeModal();
+      }
+    });
+  }
+
+  function wireStickyLotBar(scope) {
+    var bar = scope.querySelector("[data-lot-sticky-bar]");
+    var trigger = scope.querySelector(".lg\\:sticky");
+    if (!bar || !trigger) return;
+
+    function updateBar() {
+      var triggerRect = trigger.getBoundingClientRect();
+      var shouldShow = window.scrollY > 220 && triggerRect.top < -120;
+      bar.classList.toggle("translate-y-0", shouldShow);
+      bar.classList.toggle("-translate-y-full", !shouldShow);
+    }
+
+    updateBar();
+    window.addEventListener("scroll", updateBar, { passive: true });
+    window.addEventListener("resize", updateBar);
   }
 
   function wireWatchlistButton(scope, lot) {
@@ -959,114 +1164,6 @@
     });
   }
 
-  function wirePlaceBidModal(scope, lot, minimumBid, strings) {
-    var modal = document.getElementById("lot-place-bid-modal");
-    if (!modal) return;
-
-    var selectedBid = minimumBid;
-    var currentStep = 1;
-    var openButtons = scope.querySelectorAll("[data-open-place-bid]");
-    var closeButtons = modal.querySelectorAll("[data-close-place-bid]");
-    var backdrop = modal.querySelector("[data-place-bid-backdrop]");
-    var customInput = modal.querySelector("[data-place-bid-custom-input]");
-    var summaryNodes = modal.querySelectorAll("[data-place-bid-summary]");
-    var stepNodes = modal.querySelectorAll("[data-place-bid-step]");
-    var pillNodes = modal.querySelectorAll("[data-place-bid-step-pill]");
-    var nextButtons = modal.querySelectorAll("[data-place-bid-next]");
-    var backButtons = modal.querySelectorAll("[data-place-bid-back]");
-    var submitButton = modal.querySelector("[data-place-bid-submit]");
-
-    function updateSummary() {
-      summaryNodes.forEach(function (node) {
-        node.textContent = formatCurrency(selectedBid);
-      });
-    }
-
-    function renderStep() {
-      stepNodes.forEach(function (node) {
-        var step = Number(node.getAttribute("data-place-bid-step"));
-        node.classList.toggle("hidden", step !== currentStep);
-      });
-      pillNodes.forEach(function (node) {
-        var step = Number(node.getAttribute("data-place-bid-step-pill"));
-        node.classList.toggle("bg-foreground", step === currentStep);
-        node.classList.toggle("text-background", step === currentStep);
-      });
-    }
-
-    function openModal() {
-      currentStep = 1;
-      selectedBid = Math.max(Number(customInput && customInput.value) || minimumBid, minimumBid);
-      updateSummary();
-      renderStep();
-      modal.classList.remove("hidden");
-      document.body.style.overflow = "hidden";
-    }
-
-    function closeModal() {
-      modal.classList.add("hidden");
-      document.body.style.overflow = "";
-    }
-
-    openButtons.forEach(function (button) {
-      button.addEventListener("click", openModal);
-    });
-
-    modal.querySelectorAll("[data-bid-choice]").forEach(function (button) {
-      button.addEventListener("click", function () {
-        selectedBid = Math.max(Number(button.getAttribute("data-bid-amount")) || minimumBid, minimumBid);
-        if (customInput) customInput.value = String(selectedBid);
-        updateSummary();
-        modal.querySelectorAll("[data-bid-choice]").forEach(function (choice) {
-          choice.classList.remove("border-foreground", "ring-1", "ring-foreground/20");
-        });
-        button.classList.add("border-foreground", "ring-1", "ring-foreground/20");
-      });
-    });
-
-    if (customInput) {
-      customInput.addEventListener("input", function () {
-        selectedBid = Math.max(Number(customInput.value) || minimumBid, minimumBid);
-        updateSummary();
-      });
-    }
-
-    nextButtons.forEach(function (button) {
-      button.addEventListener("click", function () {
-        if (currentStep < 3) {
-          currentStep += 1;
-          renderStep();
-          return;
-        }
-      });
-    });
-
-    backButtons.forEach(function (button) {
-      button.addEventListener("click", function () {
-        currentStep = Math.max(1, currentStep - 1);
-        renderStep();
-      });
-    });
-
-    if (submitButton) {
-      submitButton.addEventListener("click", function () {
-        currentStep = 4;
-        renderStep();
-      });
-    }
-
-    closeButtons.forEach(function (button) {
-      button.addEventListener("click", closeModal);
-    });
-    if (backdrop) backdrop.addEventListener("click", closeModal);
-
-    window.addEventListener("keydown", function (event) {
-      if (event.key === "Escape" && !modal.classList.contains("hidden")) {
-        closeModal();
-      }
-    });
-  }
-
   function init() {
     var main = document.querySelector("main");
     if (!main) return;
@@ -1094,20 +1191,22 @@
               return null;
             }
 
-            return loadRelatedAndBids(bundle.rawLot, language, bundle.fallbackItems).then(function (results) {
-              renderLot(main, bundle.lot, results.relatedLots, results.bids, strings);
-              setInterval(function () {
-                updateCountdowns(main);
-              }, 1000);
-              if (window.SupabaseAPI && bundle.rawLot.id) {
-                window.SupabaseAPI.recordView({
-                  lotId: bundle.rawLot.id,
-                  lotSlug: bundle.rawLot.slug || "",
-                  lotTitle: bundle.lot.title || bundle.rawLot.title || "Lot",
-                  lotImage: getPrimaryImage(bundle.lot.lot_images || bundle.rawLot.lot_images || []),
-                  currentBid: bundle.lot.current_bid || bundle.rawLot.current_bid || bundle.rawLot.starting_bid || 0,
-                }).catch(function () {});
-              }
+            return hydrateLotFromRemote(bundle, language).then(function (hydratedBundle) {
+              return loadRelatedAndBids(hydratedBundle.rawLot, language, hydratedBundle.fallbackItems).then(function (results) {
+                renderLot(main, hydratedBundle.lot, results.relatedLots, results.bids, strings);
+                setInterval(function () {
+                  updateCountdowns(main);
+                }, 1000);
+                if (window.SupabaseAPI && hydratedBundle.rawLot.id) {
+                  window.SupabaseAPI.recordView({
+                    lotId: hydratedBundle.rawLot.id,
+                    lotSlug: hydratedBundle.rawLot.slug || "",
+                    lotTitle: hydratedBundle.lot.title || hydratedBundle.rawLot.title || "Lot",
+                    lotImage: getPrimaryImage(hydratedBundle.lot.lot_images || hydratedBundle.rawLot.lot_images || []),
+                    currentBid: hydratedBundle.lot.current_bid || hydratedBundle.rawLot.current_bid || hydratedBundle.rawLot.starting_bid || 0,
+                  }).catch(function () {});
+                }
+              });
             });
           })
           .catch(function () {

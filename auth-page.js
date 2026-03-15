@@ -436,17 +436,29 @@
     }
 
     // ── Data cache ─────────────────────────────────────────────────────────
-    const cache = { counts: null, bids: null, watchlist: null, history: null, notifications: null };
+    const cache = { counts: null, bids: null, watchlist: null, history: null, notifications: null, profile: null, userId: user.id };
 
-    async function loadDataForView(view) {
-      if (!window.SupabaseAPI) return;
-      try {
-        if (view === "overview" && !cache.counts) {
-          cache.counts = await window.SupabaseAPI.getCounts();
-        }
-        if (view === "bids" && !cache.bids) {
-          cache.bids = await window.SupabaseAPI.getBids();
-        }
+    function resetCacheForUser(nextUserId) {
+      if (!nextUserId || cache.userId === nextUserId) return;
+      cache.counts = null;
+      cache.bids = null;
+      cache.watchlist = null;
+      cache.history = null;
+      cache.notifications = null;
+      cache.profile = null;
+      cache.userId = nextUserId;
+    }
+
+	    async function loadDataForView(view) {
+	      if (!window.SupabaseAPI) return;
+	      try {
+	        resetCacheForUser((window.AuctioAuth.getCurrentUser() || user).id);
+	        if (!cache.counts) {
+	          cache.counts = await window.SupabaseAPI.getCounts();
+	        }
+	        if (view === "bids" && !cache.bids) {
+	          cache.bids = await window.SupabaseAPI.getBids();
+	        }
         if (view === "watchlist" && !cache.watchlist) {
           cache.watchlist = await window.SupabaseAPI.getWatchlist();
         }
@@ -456,8 +468,23 @@
         if (view === "settings" && !cache.notifications) {
           cache.notifications = await window.SupabaseAPI.getNotificationSettings();
         }
-      } catch (_e) {}
-    }
+        if ((view === "settings" || view === "overview") && !cache.profile) {
+          cache.profile = await window.SupabaseAPI.getProfile();
+        }
+	      } catch (_e) {}
+	    }
+
+	    function getNavBadgeCount(viewId) {
+	      if (viewId === "bids") {
+	        if (cache.counts && Number.isFinite(Number(cache.counts.bids))) return Number(cache.counts.bids);
+	        if (Array.isArray(cache.bids)) return cache.bids.length;
+	      }
+	      if (viewId === "watchlist") {
+	        if (cache.counts && Number.isFinite(Number(cache.counts.watchlist))) return Number(cache.counts.watchlist);
+	        if (Array.isArray(cache.watchlist)) return cache.watchlist.length;
+	      }
+	      return null;
+	    }
 
     function readStoredProfile() {
       try {
@@ -496,6 +523,7 @@
 
     function getAccountState() {
       const currentUser = window.AuctioAuth.getCurrentUser() || user;
+      resetCacheForUser(currentUser.id);
       const storedUsers = (() => {
         try {
           const users = JSON.parse(window.localStorage.getItem("auctio_users")) || [];
@@ -506,8 +534,9 @@
       })();
       const storedUser = storedUsers.find(function (entry) { return entry && entry.id === currentUser.id; }) || {};
       const stored = readStoredProfile();
+      const profile = cache.profile || {};
       const initials = escapeHtml(
-        [(currentUser.firstName || storedUser.firstName), (currentUser.lastName || storedUser.lastName)]
+        [(profile.first_name || currentUser.firstName || storedUser.firstName), (profile.last_name || currentUser.lastName || storedUser.lastName)]
           .filter(Boolean)
           .map(function (part) {
             return String(part).trim().charAt(0).toUpperCase();
@@ -521,36 +550,40 @@
 
       return {
         id: currentUser.id,
-        fullName: `${currentUser.firstName || storedUser.firstName || ""} ${currentUser.lastName || storedUser.lastName || ""}`.trim() || currentUser.email,
-        firstName: currentUser.firstName || storedUser.firstName || "",
-        lastName: currentUser.lastName || storedUser.lastName || "",
-        email: currentUser.email || "",
-        phone: currentUser.phone || storedUser.phone || "",
-        createdAt: currentUser.createdAt || "",
+        fullName: `${profile.first_name || currentUser.firstName || storedUser.firstName || ""} ${profile.last_name || currentUser.lastName || storedUser.lastName || ""}`.trim() || profile.email || currentUser.email,
+        firstName: profile.first_name || currentUser.firstName || storedUser.firstName || "",
+        lastName: profile.last_name || currentUser.lastName || storedUser.lastName || "",
+        email: profile.email || currentUser.email || "",
+        phone: profile.phone || currentUser.phone || storedUser.phone || "",
+        createdAt: profile.created_at || currentUser.createdAt || "",
         initials,
         memberSince,
-        country: (cache.notifications && cache.notifications._profile && cache.notifications._profile.country) || stored.country || "United States",
-        street: (cache.notifications && cache.notifications._profile && cache.notifications._profile.street) || stored.street || "",
-        city: (cache.notifications && cache.notifications._profile && cache.notifications._profile.city) || stored.city || "",
-        state: (cache.notifications && cache.notifications._profile && cache.notifications._profile.state) || stored.state || "",
-        zip: (cache.notifications && cache.notifications._profile && cache.notifications._profile.zip) || stored.zip || "",
+        country: profile.country || stored.country || "United States",
+        street: profile.address || stored.street || "",
+        city: profile.city || stored.city || "",
+        state: profile.state || stored.state || "",
+        zip: profile.postal_code || stored.zip || "",
       };
     }
 
-    function buildNavButton(view, currentView, mobile) {
-      const isActive = currentView === view.id;
-      const baseClass = mobile
-        ? "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors "
-        : "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors ";
-      const stateClass = isActive
-        ? mobile
-          ? "bg-primary text-primary-foreground"
-          : "bg-primary/10 text-primary"
-        : mobile
-          ? "bg-muted text-muted-foreground"
-          : "hover:bg-muted text-muted-foreground hover:text-foreground";
-      return `<button class="${baseClass}${stateClass}" type="button" data-account-view="${view.id}">${view.icon.replace("w-5 h-5", mobile ? "w-4 h-4" : "w-5 h-5")}<span class="font-medium">${view.label}</span></button>`;
-    }
+	    function buildNavButton(view, currentView, mobile) {
+	      const isActive = currentView === view.id;
+	      const baseClass = mobile
+	        ? "flex items-center gap-2 px-4 py-2 rounded-full text-sm font-medium whitespace-nowrap transition-colors "
+	        : "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-left transition-colors ";
+	      const stateClass = isActive
+	        ? mobile
+	          ? "bg-primary text-primary-foreground"
+	          : "bg-primary/10 text-primary"
+	        : mobile
+	          ? "bg-muted text-muted-foreground"
+	          : "hover:bg-muted text-muted-foreground hover:text-foreground";
+	      const badgeCount = getNavBadgeCount(view.id);
+	      const badgeHtml = badgeCount && badgeCount > 0
+	        ? `<span data-slot="badge" class="inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden border-transparent bg-primary text-primary-foreground [a&]:hover:bg-primary/90 ${mobile ? "" : "ml-auto"}">${badgeCount}</span>`
+	        : "";
+	      return `<button class="${baseClass}${stateClass}" type="button" data-account-view="${view.id}">${view.icon.replace("w-5 h-5", mobile ? "w-4 h-4" : "w-5 h-5")}<span class="font-medium">${view.label}</span>${badgeHtml}</button>`;
+	    }
 
     function buildPlaceholderContent(title, copy) {
       const emptyStates = {
@@ -928,7 +961,7 @@
         </div>`;
     }
 
-    function buildHistoryContent() {
+	    function buildHistoryContent() {
       var items = cache.history;
       if (!items) return `<div class="flex-1 min-w-0"><div class="flex items-center justify-center py-20 text-muted-foreground">Loading…</div></div>`;
       if (!items.length) return buildPlaceholderContent("Viewing History", "Review recently viewed lots and auctions.");
@@ -945,34 +978,119 @@
               }).join("")}
             </div>
           </div>
-        </div>`;
-    }
+	        </div>`;
+	    }
 
-    function buildBidsContent() {
-      var items = cache.bids;
-      if (!items) return `<div class="flex-1 min-w-0"><div class="flex items-center justify-center py-20 text-muted-foreground">Loading…</div></div>`;
-      if (!items.length) return buildPlaceholderContent("My Bids", "Track your live and past bidding activity.");
-      var statusBadge = { active: "bg-green-100 text-green-800", won: "bg-blue-100 text-blue-800", outbid: "bg-yellow-100 text-yellow-800", lost: "bg-red-100 text-red-800" };
-      return `
-        <div class="flex-1 min-w-0">
-          <div class="space-y-6">
-            <div><h1 class="text-2xl lg:text-3xl font-serif mb-2">My Bids</h1><p class="text-muted-foreground">${items.length} bid${items.length !== 1 ? "s" : ""} placed</p></div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
-              ${items.map(function(item) {
-                var badge = statusBadge[item.status] || "bg-muted text-muted-foreground";
-                return buildLotCard(item, `
-                  <div class="mt-auto flex items-center justify-between gap-2">
-                    <span class="text-xs font-medium">Your bid: ${formatCurrency(item.bidAmount)}</span>
-                    <span class="text-xs px-2 py-0.5 rounded-full ${badge}">${escapeHtml(item.status)}</span>
-                  </div>
-                  <p class="text-xs text-muted-foreground">${timeAgo(item.placedAt)}</p>
-                  ${buildBidInvoiceCommitmentBlock(item)}
-                  ${buildWonInvoiceBlock(item)}`);
-              }).join("")}
-            </div>
-          </div>
-        </div>`;
-    }
+	    function buildBidStatusSection(title, iconHtml, items, renderItem) {
+	      if (!items.length) return "";
+	      return `
+	        <div>
+	          <div class="flex items-center gap-2 mb-4">
+	            <div class="p-1.5 rounded bg-muted">${iconHtml}</div>
+	            <h2 class="text-lg font-semibold">${title} (${items.length})</h2>
+	          </div>
+	          <div class="space-y-3">
+	            ${items.map(renderItem).join("")}
+	          </div>
+	        </div>`;
+	    }
+
+	    function buildBidRowCard(item, options) {
+	      var href = item.lotSlug ? `${basePath}lot/index.html?slug=${escapeHtml(item.lotSlug)}` : "#";
+	      var actionHref = item.lotSlug ? `${basePath}bidding/index.html?slug=${escapeHtml(item.lotSlug)}` : href;
+	      var imageHtml = item.lotImage
+	        ? `<img alt="${escapeHtml(item.lotTitle)}" class="object-cover" src="${escapeHtml(item.lotImage)}" style="position:absolute;height:100%;width:100%;inset:0;color:transparent;">`
+	        : `<div class="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground">No image</div>`;
+	      var actionHtml = options.actionLabel
+	        ? `<a data-slot="button" class="items-center justify-center whitespace-nowrap text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border shadow-xs hover:bg-accent hover:text-accent-foreground dark:bg-input/30 dark:border-input dark:hover:bg-input/50 h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5 self-center hidden sm:flex bg-transparent" href="${actionHref}">${options.actionLabel}</a>`
+	        : "";
+	      return `
+	        <div data-slot="card" class="bg-card text-card-foreground flex flex-col gap-6 rounded-xl border py-6 shadow-sm overflow-hidden">
+	          <div class="flex gap-4 p-4">
+	            <div class="relative w-20 h-20 flex-shrink-0 rounded-lg overflow-hidden bg-muted">${imageHtml}</div>
+	            <div class="flex-1 min-w-0">
+	              <a class="font-semibold hover:text-primary transition-colors line-clamp-1" href="${href}">${escapeHtml(item.lotTitle)}</a>
+	              <div class="flex flex-wrap gap-x-4 gap-y-1 mt-1 text-sm text-muted-foreground">
+	                <span>Your bid: ${formatCurrency(item.bidAmount)}</span>
+	                <span>Current Bid: ${formatCurrency(item.currentBid || item.bidAmount)}</span>
+	              </div>
+	              <div class="flex items-center gap-2 mt-2">
+	                <span data-slot="badge" class="inline-flex items-center justify-center rounded-md border px-2 py-0.5 text-xs font-medium w-fit whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden ${options.badgeClass}">${options.badgeLabel}</span>
+	                <span class="text-xs text-muted-foreground flex items-center gap-1"><svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock w-3 h-3"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>${timeAgo(item.placedAt)}</span>
+	              </div>
+	              ${buildBidInvoiceCommitmentBlock(item)}
+	              ${buildWonInvoiceBlock(item)}
+	            </div>
+	            ${actionHtml}
+	          </div>
+	        </div>`;
+	    }
+
+	    function buildBidsContent() {
+	      var items = cache.bids;
+	      if (!items) return `<div class="flex-1 min-w-0"><div class="flex items-center justify-center py-20 text-muted-foreground">Loading…</div></div>`;
+	      if (!items.length) return buildPlaceholderContent("My Bids", "Track your live and past bidding activity.");
+	      var outbidItems = items.filter(function(item) { return item.status === "outbid"; });
+	      var activeItems = items.filter(function(item) { return item.status === "active"; });
+	      var wonItems = items.filter(function(item) { return item.status === "won"; });
+	      var lostItems = items.filter(function(item) { return item.status === "lost"; });
+	      return `
+	        <div class="flex-1 min-w-0">
+	          <div class="space-y-6">
+	            <div><h1 class="text-2xl lg:text-3xl font-serif mb-2">My Bids</h1><p class="text-muted-foreground">Track all your auction activity</p></div>
+	            <div class="space-y-6">
+	              ${buildBidStatusSection(
+	                "Outbid",
+	                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trending-down w-4 h-4 text-orange-600"><polyline points="22 17 13.5 8.5 8.5 13.5 2 7"></polyline><polyline points="16 17 22 17 22 11"></polyline></svg>',
+	                outbidItems,
+	                function(item) {
+	                  return buildBidRowCard(item, {
+	                    badgeLabel: "Outbid",
+	                    badgeClass: "border-orange-500/50 text-orange-600",
+	                    actionLabel: "Bid Again"
+	                  });
+	                }
+	              )}
+	              ${buildBidStatusSection(
+	                "Active",
+	                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-gavel w-4 h-4 text-emerald-600"><path d="m14.5 12.5-8 8a2.119 2.119 0 1 1-3-3l8-8"></path><path d="m16 16 6-6"></path><path d="m8 8 6-6"></path><path d="m9 7 8 8"></path><path d="m21 11-8-8"></path></svg>',
+	                activeItems,
+	                function(item) {
+	                  return buildBidRowCard(item, {
+	                    badgeLabel: "Active",
+	                    badgeClass: "border-emerald-500/50 text-emerald-600",
+	                    actionLabel: ""
+	                  });
+	                }
+	              )}
+	              ${buildBidStatusSection(
+	                "Won",
+	                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trophy w-4 h-4 text-blue-600"><path d="M8 21h8"></path><path d="M12 17v4"></path><path d="M7 4h10v5a5 5 0 0 1-10 0V4Z"></path><path d="M17 5h3a2 2 0 0 1 2 2v1a4 4 0 0 1-4 4h-1"></path><path d="M7 5H4a2 2 0 0 0-2 2v1a4 4 0 0 0 4 4h1"></path></svg>',
+	                wonItems,
+	                function(item) {
+	                  return buildBidRowCard(item, {
+	                    badgeLabel: "Won",
+	                    badgeClass: "border-blue-500/50 text-blue-600",
+	                    actionLabel: ""
+	                  });
+	                }
+	              )}
+	              ${buildBidStatusSection(
+	                "Lost",
+	                '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-circle-x w-4 h-4 text-rose-600"><circle cx="12" cy="12" r="10"></circle><path d="m15 9-6 6"></path><path d="m9 9 6 6"></path></svg>',
+	                lostItems,
+	                function(item) {
+	                  return buildBidRowCard(item, {
+	                    badgeLabel: "Lost",
+	                    badgeClass: "border-rose-500/50 text-rose-600",
+	                    actionLabel: ""
+	                  });
+	                }
+	              )}
+	            </div>
+	          </div>
+	        </div>`;
+	    }
 
     function buildMainContent(state) {
       if (activeView === "settings") return buildSettingsContent(state);
@@ -1117,18 +1235,25 @@
                 return;
               }
 
-              try {
-                if (window.SupabaseAPI) {
-                  await window.SupabaseAPI.updateProfile({
-                    firstName: personalState.firstName,
-                    lastName: personalState.lastName,
-                    phone: personalState.phone,
-                  });
-                }
-                updateLegacyUserRecord({
-                  id: state.id,
-                  firstName: personalState.firstName,
-                  lastName: personalState.lastName,
+	              try {
+	                if (window.SupabaseAPI) {
+	                  await window.SupabaseAPI.updateProfile({
+	                    firstName: personalState.firstName,
+	                    lastName: personalState.lastName,
+	                    phone: personalState.phone,
+	                  });
+	                }
+	                cache.profile = Object.assign({}, cache.profile || {}, {
+	                  first_name: personalState.firstName,
+	                  last_name: personalState.lastName,
+	                  email: state.email,
+	                  phone: personalState.phone,
+	                  created_at: (cache.profile && cache.profile.created_at) || state.createdAt || "",
+	                });
+	                updateLegacyUserRecord({
+	                  id: state.id,
+	                  firstName: personalState.firstName,
+	                  lastName: personalState.lastName,
                   fullName: `${personalState.firstName} ${personalState.lastName}`.trim() || state.email || "Collector",
                   email: state.email,
                   phone: personalState.phone,
@@ -1157,34 +1282,32 @@
               return;
             }
 
-            try {
-              if (window.SupabaseAPI) {
-                await window.SupabaseAPI.updateProfile({
-                  address: addressState.street,
+	            try {
+	              if (window.SupabaseAPI) {
+	                await window.SupabaseAPI.updateProfile({
+	                  address: addressState.street,
                   city: addressState.city,
                   state: addressState.state,
                   postalCode: addressState.zip,
                   country: addressState.country,
                 });
               }
-              writeStoredProfile({
-                country: addressState.country,
-                street: addressState.street,
-                city: addressState.city,
-                state: addressState.state,
-                zip: addressState.zip,
-              });
-              cache.notifications = Object.assign({}, cache.notifications || {}, {
-                _profile: {
-                  country: addressState.country,
-                  street: addressState.street,
-                  city: addressState.city,
-                  state: addressState.state,
-                  zip: addressState.zip,
-                },
-              });
-              flash.profile = { type: "success", text: "Shipping address updated." };
-            } catch (error) {
+	              writeStoredProfile({
+	                country: addressState.country,
+	                street: addressState.street,
+	                city: addressState.city,
+	                state: addressState.state,
+	                zip: addressState.zip,
+	              });
+	              cache.profile = Object.assign({}, cache.profile || {}, {
+	                country: addressState.country,
+	                address: addressState.street,
+	                city: addressState.city,
+	                state: addressState.state,
+	                postal_code: addressState.zip,
+	              });
+	              flash.profile = { type: "success", text: "Shipping address updated." };
+	            } catch (error) {
               flash.profile = { type: "error", text: error.message || "Unable to save shipping address." };
             }
 

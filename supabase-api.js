@@ -466,16 +466,7 @@
   async function getNotificationSettings() {
     var sb = getClient(); if (!sb) return null;
     var uid = await getUserId(); if (!uid) return null;
-    var stored = readStoredProfile(uid);
     var notif = { bid_updates: true, auction_reminders: true, new_listings: false, newsletter: false };
-    // Attach profile address data so settings page can populate fields
-    notif._profile = {
-      country: stored.country || '',
-      street: stored.street || '',
-      city: stored.city || '',
-      state: stored.state || '',
-      zip: stored.zip || ''
-    };
     return notif;
   }
 

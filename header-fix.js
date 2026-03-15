@@ -668,17 +668,12 @@
             <span data-current-language class="hidden text-[11px] font-semibold uppercase tracking-wide sm:inline">EN</span>
             <span class="sr-only">Switch language</span>
           </button>
-          <div id="header-language-menu" class="hidden absolute right-0 top-full z-[140] mt-3 w-[220px] overflow-hidden rounded-xl border border-border bg-background shadow-2xl">
-            <div class="border-b border-border/60 px-4 py-3">
-              <p class="text-sm font-medium">Language</p>
-              <p class="text-xs text-muted-foreground">Choose your preferred language</p>
-            </div>
-            <div class="max-h-[220px] overflow-y-auto overscroll-contain touch-pan-y p-1.5" data-language-scroll>
+          <div id="header-language-menu" class="hidden absolute right-0 top-full z-[150] mt-2 min-w-[8rem] overflow-x-hidden rounded-md border bg-popover text-popover-foreground p-1 shadow-md max-h-80 overflow-y-auto">
+            <div class="max-h-80 overflow-y-auto overscroll-contain touch-pan-y" data-language-scroll>
               ${LANGUAGES.map(
                 (lang) => `
-                  <button type="button" data-language-code="${lang.code}" class="flex w-full items-center justify-between rounded-md px-2 py-1 text-left text-[12px] leading-4 hover:bg-muted/70 transition-colors">
+                  <button type="button" role="menuitem" data-language-code="${lang.code}" class="relative flex w-full cursor-default items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm outline-hidden transition-colors focus:bg-accent focus:text-accent-foreground hover:bg-accent hover:text-accent-foreground">
                     <span class="truncate">${lang.nativeName}</span>
-                    <span data-language-check class="text-sm"></span>
                   </button>
                 `
               ).join("")}
@@ -1356,10 +1351,8 @@
     });
     document.querySelectorAll("[data-language-code]").forEach((node) => {
       const active = node.getAttribute("data-language-code") === current.code;
-      node.classList.toggle("bg-muted", active);
+      node.classList.toggle("bg-accent", active);
       node.classList.toggle("font-medium", active);
-      const check = node.querySelector("[data-language-check]");
-      if (check) check.textContent = active ? "✓" : "";
     });
     applyHeaderTranslations(null, copy);
     applySiteTranslations(current.code, copy, basePath).catch(function () {
