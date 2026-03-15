@@ -1,7 +1,23 @@
 (function () {
+  var REMOTE_SUPABASE_URL = "https://pwihhhbomwxzznekueok.supabase.co";
+  var REMOTE_SUPABASE_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB3aWhoaGJvbXd4enpuZWt1ZW9rIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjU0NTgzNjMsImV4cCI6MjA4MTAzNDM2M30.S1aJOnJIdZY8WGVUUAbvMStxR4C5o2-3AkO6GgmkKYY";
+
   function loadJson(path) {
     return fetch(path, { cache: "no-store" }).then(function (response) {
       if (!response.ok) throw new Error("Failed to load " + path);
+      return response.json();
+    });
+  }
+
+  function requestRemoteSupabase(path) {
+    return fetch(REMOTE_SUPABASE_URL + path, {
+      headers: {
+        apikey: REMOTE_SUPABASE_KEY,
+        Authorization: "Bearer " + REMOTE_SUPABASE_KEY,
+      },
+    }).then(function (response) {
+      if (!response.ok) throw new Error("Remote request failed: " + response.status);
       return response.json();
     });
   }
@@ -56,31 +72,31 @@
 
   function renderCard(item) {
     return (
-      '<a href="' + getLotHref(item) + '" class="block h-full"><div class="border border-border/50 bg-background rounded-lg overflow-hidden h-full flex flex-col group hover:border-foreground/30 transition-colors">' +
+      '<a class="block h-full" href="' + getLotHref(item) + '"><div data-slot="card" class="text-card-foreground gap-6 rounded-xl border shadow-sm group overflow-hidden border-border/30 hover:border-border transition-all duration-300 bg-background cursor-pointer h-full flex flex-col p-0">' +
       '<div class="relative aspect-square overflow-hidden bg-muted/20 rounded-t-lg">' +
       '<img src="' +
       escapeHtml(item.image) +
       '" alt="' +
       escapeHtml(item.title) +
       '" class="w-full h-full object-cover pointer-events-none select-none" draggable="false"/>' +
-      '<div class="absolute top-1 right-1 bg-background/95 backdrop-blur-sm rounded-full px-1 py-0.5 flex items-center gap-0.5"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-2 w-2 sm:h-2.5 sm:w-2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="text-[8px] sm:text-[9px] font-medium" data-end-time="' +
+      '<div class="absolute top-1 right-1 bg-background/95 backdrop-blur-sm rounded-full px-1 py-0.5 flex items-center gap-0.5"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock h-2 w-2 sm:h-2.5 sm:w-2.5"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="text-[8px] sm:text-[9px] font-medium" data-end-time="' +
       escapeHtml(item.endTime) +
       '">' +
       getCountdown(item.endTime) +
       "</span></div></div>" +
-      '<div class="p-1.5 sm:p-2 space-y-1 sm:space-y-1.5 flex-1 flex flex-col">' +
-      '<span class="text-[8px] sm:text-[9px] uppercase tracking-wider bg-muted/50 border border-border/50 px-1 py-0.5 w-fit rounded">' +
+      '<div data-slot="card-content" class="p-1.5 sm:p-2 space-y-1 sm:space-y-1.5 flex-1 flex flex-col">' +
+      '<span data-slot="badge" class="inline-flex items-center justify-center rounded-md border font-medium whitespace-nowrap shrink-0 [&>svg]:size-3 gap-1 [&>svg]:pointer-events-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive transition-[color,box-shadow] overflow-hidden text-secondary-foreground [a&]:hover:bg-secondary/90 text-[8px] sm:text-[9px] uppercase tracking-wider bg-muted/50 border-border/50 px-1 py-0.5 w-fit">' +
       escapeHtml(item.category || "General") +
       "</span>" +
       '<h3 class="font-serif text-[10px] sm:text-xs leading-tight line-clamp-2 h-[28px] sm:h-[32px]">' +
       escapeHtml(item.title) +
-      '</h3><div class="flex items-center gap-0.5 sm:gap-1 py-0.5 sm:py-1 px-1 sm:px-1.5 bg-muted/30 rounded text-[9px] sm:text-[10px] font-medium"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><span class="font-semibold" data-end-time="' +
+      '</h3><div class="flex items-center gap-0.5 sm:gap-1 py-0.5 sm:py-1 px-1 sm:px-1.5 bg-muted/30 rounded text-[9px] sm:text-[10px] font-medium"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-clock h-2.5 w-2.5 sm:h-3 sm:w-3 text-primary"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg><div class="flex items-center gap-0.5 sm:gap-1 tabular-nums"><span class="font-semibold" data-end-time="' +
       escapeHtml(item.endTime) +
       '">' +
       getCountdown(item.endTime) +
-      '</span></div><div><p class="text-[8px] sm:text-[9px] text-muted-foreground uppercase tracking-wider">Current Bid</p><p class="text-xs sm:text-sm font-semibold tabular-nums">' +
+      '</span></div></div><div><p class="text-[8px] sm:text-[9px] text-muted-foreground uppercase tracking-wider">Current Bid</p><p class="text-xs sm:text-sm font-semibold tabular-nums">' +
       formatCurrency(item.currentBid) +
-      '</p></div><span class="inline-flex items-center justify-center whitespace-nowrap rounded-md text-[9px] sm:text-[10px] font-medium transition-all border bg-transparent h-6 sm:h-7 mt-auto w-full hover:bg-foreground hover:text-background">View Auction</span></div></div></a>'
+      '</p></div><button data-slot="button" class="inline-flex items-center justify-center whitespace-nowrap font-medium disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*=\'size-\'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive border shadow-xs dark:bg-input/30 dark:border-input dark:hover:bg-input/50 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5 w-full hover:bg-foreground hover:text-background transition-colors bg-transparent text-[9px] sm:text-[10px] h-6 sm:h-7 mt-auto">View Auction</button></div></div></a>'
     );
   }
 
@@ -288,20 +304,26 @@
 
   function pickLandingSectionItems(items, headingText) {
     var normalizedHeading = headingText.toLowerCase();
+    var allItems = Array.isArray(items) ? items : [];
+    var remoteSources = arguments[2] || {};
+
+    function pickByMatcher(matcher, limit) {
+      var activeMatches = takeUnique(filterActiveItems(allItems).filter(matcher), limit);
+      if (activeMatches.length) return activeMatches;
+      return takeUnique(allItems.filter(matcher), limit);
+    }
 
     if (normalizedHeading === "watches") {
-      return takeUnique(
-        filterActiveItems(items).filter(function (item) {
+      if (Array.isArray(remoteSources.watches) && remoteSources.watches.length) return remoteSources.watches.slice(0, 10);
+      return pickByMatcher(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return haystack.includes("watch") || item.category === "Watches";
-        }),
-        10
-      );
+        }, 10);
     }
 
     if (normalizedHeading === "handbag") {
-      return takeUnique(
-        filterActiveItems(items).filter(function (item) {
+      if (Array.isArray(remoteSources.handbag) && remoteSources.handbag.length) return remoteSources.handbag.slice(0, 10);
+      return pickByMatcher(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return (
             haystack.includes("bag") ||
@@ -314,48 +336,40 @@
             item.category === "Chanel" ||
             item.category === "Louis Vuitton"
           );
-        }),
-        10
-      );
+        }, 10);
     }
 
     if (normalizedHeading === "earring") {
-      return takeUnique(
-        filterActiveItems(items).filter(function (item) {
+      if (Array.isArray(remoteSources.earring) && remoteSources.earring.length) return remoteSources.earring.slice(0, 10);
+      return pickByMatcher(function (item) {
           var haystack = (item.title + " " + item.category).toLowerCase();
           return haystack.includes("earring") || haystack.includes("earclip") || item.category === "Earring";
-        }),
-        10
-      );
+        }, 10);
     }
 
     if (normalizedHeading === "books & manuscripts") {
-      return takeUnique(
-        filterActiveItems(items).filter(function (item) {
+      if (Array.isArray(remoteSources.books) && remoteSources.books.length) return remoteSources.books.slice(0, 10);
+      return pickByMatcher(function (item) {
           return item.category === "Books & Manuscripts";
-        }),
-        10
-      );
+        }, 10);
     }
 
     if (normalizedHeading === "collectible") {
-      return takeUnique(
-        filterActiveItems(items).filter(function (item) {
+      if (Array.isArray(remoteSources.collectible) && remoteSources.collectible.length) return remoteSources.collectible.slice(0, 10);
+      return pickByMatcher(function (item) {
           return item.category === "Collectible";
-        }),
-        10
-      );
+        }, 10);
     }
 
     return [];
   }
 
-  function renderLandingCategorySections(items) {
+  function renderLandingCategorySections(items, remoteSources) {
     var headings = Array.from(document.querySelectorAll("h2"));
 
     headings.forEach(function (heading) {
       var headingText = heading.textContent.trim();
-      var sectionItems = pickLandingSectionItems(items, headingText);
+      var sectionItems = pickLandingSectionItems(items, headingText, remoteSources);
       if (!sectionItems.length) return;
 
       var section = heading.closest("section");
@@ -372,6 +386,218 @@
           return '<div class="flex-shrink-0 w-[240px] md:w-[260px] snap-start">' + renderCard(item) + "</div>";
         })
         .join("");
+    });
+  }
+
+  function fetchRemoteActiveWhiskeyItems() {
+    var whiskeyCategoryIds = [
+      "bb1502a0-4c07-4cd8-9a18-9ae024ffe94c",
+      "20890301-f0f1-404f-b303-d3d25c301610",
+      "1b8ef0ea-838d-4737-a7b2-7faccf369504",
+      "81c6a96d-0a01-486e-b8f2-1d9b845a7010",
+      "46552fce-692b-4dcd-a95d-8de0bedefff2",
+      "002b85af-f997-46b7-9d4c-477fd6d0e131",
+      "51583006-74f2-41b4-b951-76c4c034dea9",
+      "4adfb3a1-4948-4abc-b967-da7a33b4dfa8",
+      "381105e0-5b02-43f8-8bcc-b62faf3b51f6",
+    ];
+    var now = new Date().toISOString();
+
+    return requestRemoteSupabase(
+      "/rest/v1/lots?select=id,slug,title,current_bid,end_time,category_id" +
+        "&category_id=in.(" +
+        whiskeyCategoryIds.join(",") +
+        ")" +
+        "&end_time=gt." +
+        encodeURIComponent(now) +
+        "&order=end_time.asc&limit=12"
+    ).then(function (lots) {
+      if (!Array.isArray(lots) || !lots.length) return [];
+
+      var lotIds = lots.map(function (item) {
+        return item.id;
+      });
+
+      return Promise.all([
+        requestRemoteSupabase(
+          "/rest/v1/lot_images?select=lot_id,image_url,is_primary,order_position" +
+            "&lot_id=in.(" +
+            lotIds.join(",") +
+            ")" +
+            "&order=lot_id.asc&order=is_primary.desc&order=order_position.asc"
+        ),
+        requestRemoteSupabase(
+          "/rest/v1/categories?select=id,name&or=(id.in.(" + whiskeyCategoryIds.join(",") + "))"
+        ),
+      ]).then(function (results) {
+        var images = results[0];
+        var categories = results[1];
+        var imageMap = new Map();
+        var categoryMap = new Map();
+
+        categories.forEach(function (category) {
+          categoryMap.set(category.id, category.name);
+        });
+
+        images.forEach(function (image) {
+          if (!imageMap.has(image.lot_id)) {
+            imageMap.set(image.lot_id, image.image_url);
+          }
+        });
+
+        return lots.map(function (lot) {
+          return {
+            id: lot.id,
+            slug: lot.slug,
+            title: lot.title,
+            image: imageMap.get(lot.id) || "logo1.svg",
+            currentBid: lot.current_bid,
+            endTime: lot.end_time,
+            category: categoryMap.get(lot.category_id) || "Spirits",
+          };
+        });
+      });
+    });
+  }
+
+  function fetchRemoteActiveCategoryItems(categoryIds, matcher, limit) {
+    var now = new Date().toISOString();
+
+    return requestRemoteSupabase(
+      "/rest/v1/lots?select=id,slug,title,current_bid,end_time,status,category_id" +
+        "&category_id=in.(" +
+        categoryIds.join(",") +
+        ")" +
+        "&end_time=gt." +
+        encodeURIComponent(now) +
+        "&order=end_time.asc&limit=60"
+    ).then(function (lots) {
+      var filteredLots = (Array.isArray(lots) ? lots : []).filter(function (lot) {
+        return typeof matcher === "function" ? matcher(lot) : true;
+      }).slice(0, limit || 10);
+
+      if (!filteredLots.length) return [];
+
+      var lotIds = filteredLots.map(function (item) {
+        return item.id;
+      });
+
+      return Promise.all([
+        requestRemoteSupabase(
+          "/rest/v1/lot_images?select=lot_id,image_url,is_primary,order_position" +
+            "&lot_id=in.(" +
+            lotIds.join(",") +
+            ")" +
+            "&order=lot_id.asc&order=is_primary.desc&order=order_position.asc"
+        ),
+        requestRemoteSupabase("/rest/v1/categories?select=id,name&id=in.(" + categoryIds.join(",") + ")"),
+      ]).then(function (results) {
+        var images = results[0];
+        var categories = results[1];
+        var imageMap = new Map();
+        var categoryMap = new Map();
+
+        categories.forEach(function (category) {
+          categoryMap.set(category.id, category.name);
+        });
+
+        images.forEach(function (image) {
+          if (!imageMap.has(image.lot_id)) {
+            imageMap.set(image.lot_id, image.image_url);
+          }
+        });
+
+        return filteredLots.map(function (lot) {
+          return {
+            id: lot.id,
+            slug: lot.slug,
+            title: lot.title,
+            image: imageMap.get(lot.id) || "logo1.svg",
+            currentBid: lot.current_bid,
+            endTime: lot.end_time,
+            category: categoryMap.get(lot.category_id) || "General",
+          };
+        });
+      });
+    });
+  }
+
+  function pickCollectionLandingItems(items, headingText, remoteSources) {
+    var normalizedHeading = headingText.toLowerCase();
+    var activeItems = filterActiveItems(items);
+    var allItems = Array.isArray(items) ? items : [];
+    var sources = remoteSources || {};
+
+    function pickByMatcher(matcher, limit) {
+      var activeMatches = takeUnique(activeItems.filter(matcher), limit);
+      if (activeMatches.length) return activeMatches;
+      return takeUnique(allItems.filter(matcher), limit);
+    }
+
+    if (normalizedHeading === "the great whiskey collection") {
+      if (Array.isArray(sources.whiskey) && sources.whiskey.length) {
+        return sources.whiskey.slice(0, 12);
+      }
+      return pickByMatcher(function (item) {
+          return getTopLevelCategory(item) === "spirits";
+        }, 12);
+    }
+
+    if (normalizedHeading === "the winter edit: icons of luxury") {
+      return pickByMatcher(function (item) {
+          var topLevel = getTopLevelCategory(item);
+          return topLevel === "bags-fashion" || topLevel === "jewelry" || topLevel === "watches";
+        }, 12);
+    }
+
+    return [];
+  }
+
+  function renderCollectionLandingSections(items, remoteSources) {
+    var sections = Array.from(document.querySelectorAll("section"));
+
+    sections.forEach(function (section) {
+      var heading = section.querySelector("h2");
+      var headingText = heading ? heading.textContent.trim() : "";
+      var viewAllLink = section.querySelector('a[href$="collections/the-great-whiskey-collection.html"], a[href$="collections/the-winter-edit-icons-of-luxury.html"]');
+      var sectionItems = pickCollectionLandingItems(items, headingText, remoteSources);
+
+      if (!sectionItems.length && viewAllLink) {
+        if (viewAllLink.getAttribute("href").indexOf("the-great-whiskey-collection") !== -1) {
+          sectionItems = pickCollectionLandingItems(items, "The Great Whiskey Collection", remoteSources);
+        } else if (viewAllLink.getAttribute("href").indexOf("the-winter-edit-icons-of-luxury") !== -1) {
+          sectionItems = pickCollectionLandingItems(items, "The Winter Edit: Icons of Luxury", remoteSources);
+        }
+      }
+
+      if (!sectionItems.length) return;
+
+      var stack = section && section.querySelector(".space-y-8");
+      if (!section || !stack) return;
+
+      var existingRow = stack.querySelector("[data-home-collection-row]");
+      if (!existingRow) {
+        stack.insertAdjacentHTML(
+          "beforeend",
+          '<div data-home-collection-row="true">' +
+            '<div class="overflow-x-auto pb-4 -mx-4 px-4">' +
+              '<div class="flex gap-3 min-w-max"></div>' +
+            "</div>" +
+          "</div>"
+        );
+        existingRow = stack.querySelector("[data-home-collection-row]");
+      }
+
+      var row = existingRow && existingRow.querySelector(".flex.gap-3.min-w-max");
+      if (!row) return;
+
+      row.innerHTML = sectionItems
+        .map(function (item) {
+          return '<div class="w-[200px] sm:w-[220px] flex-shrink-0">' + renderCard(item) + "</div>";
+        })
+        .join("");
+
+      updateCountdowns(row);
     });
   }
 
@@ -562,9 +788,49 @@
     loadJson("data/shop-all-meta.json"),
     loadJson("data/categories.json"),
   ])
-    .then(function (results) {
+    .then(async function (results) {
+      var remoteSources = {
+        whiskey: [],
+        watches: [],
+        handbag: [],
+        earring: [],
+        collectible: [],
+        books: [],
+      };
+      try {
+        var remoteResults = await Promise.allSettled([
+          fetchRemoteActiveWhiskeyItems(),
+          fetchRemoteActiveCategoryItems(["9a4cd4f7-6b24-4183-b263-a25bded0e362"], null, 10),
+          fetchRemoteActiveCategoryItems(
+            ["ea511401-37c0-4768-add7-7d4738adb260", "173a1db8-0a95-4114-9cb3-6862c28c2835", "d475b83f-4a59-4394-8819-a53b8f5141c8", "74a6e0fb-fd62-4835-8b08-eb61bdb09593", "bced8a59-788a-447a-89e6-4c8f66ec9de3"],
+            null,
+            10
+          ),
+          fetchRemoteActiveCategoryItems(
+            ["52754627-1fbd-49e4-bc59-7abfb352c762", "575c9b4d-7f9c-42c0-b79d-e128f6ce3534"],
+            function (lot) {
+              var haystack = String(lot.title || "").toLowerCase();
+              return haystack.includes("earring") || haystack.includes("earclip");
+            },
+            10
+          ),
+          fetchRemoteActiveCategoryItems(["3a8bf043-dc55-4e87-87e2-f7c368995ef2"], null, 10),
+          fetchRemoteActiveCategoryItems(["e5d6928f-845c-464e-b77b-0ee67f552a20"], null, 10),
+        ]);
+
+        remoteSources.whiskey = remoteResults[0].status === "fulfilled" ? remoteResults[0].value : [];
+        remoteSources.watches = remoteResults[1].status === "fulfilled" ? remoteResults[1].value : [];
+        remoteSources.handbag = remoteResults[2].status === "fulfilled" ? remoteResults[2].value : [];
+        remoteSources.earring = remoteResults[3].status === "fulfilled" ? remoteResults[3].value : [];
+        remoteSources.collectible = remoteResults[4].status === "fulfilled" ? remoteResults[4].value : [];
+        remoteSources.books = remoteResults[5].status === "fulfilled" ? remoteResults[5].value : [];
+      } catch (error) {
+        console.error("Remote landing fetch failed:", error);
+      }
+
       renderFeatured(results[0]);
-      renderLandingCategorySections(results[1]);
+      renderLandingCategorySections(results[1], remoteSources);
+      renderCollectionLandingSections(results[1], remoteSources);
       renderShopAll(results[1], results[2], results[3]);
     })
     .catch(function (error) {
